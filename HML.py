@@ -194,7 +194,6 @@ class MeasurementSystem:
             data_length = int(length_str)
             valid_data = waveform_data[2 + n: 2 + n + data_length]
             waveform_array = np.frombuffer(valid_data, dtype=np.uint8)
-            print(f"实际点数: {len(waveform_array)}")
 
             # 将波形数据转换为电压值
             # 你需要根据示波器的设置（YUNIT）来调整这个比例
@@ -457,9 +456,9 @@ def advanced_rosenbrock_search(
 def advanced_rosenbrock_search2(
     param_bounds = [(1,130), (1,130), (1,130), (1,130)],
     objective_func = compute_fml_objective,
-    init_step_size=10.0,
+    init_step_size=15.0,
     reward_factor= 2,
-    punish_factor= -0.5,
+    punish_factor= -0.6,
     patience_limit=5,
     max_iter=100
 ):
@@ -532,7 +531,7 @@ def advanced_rosenbrock_search2(
             # 设置电压
             for j in range(4):
                 ctrl.set_voltage(i + 1, forward_params[i])
-            time.sleep(0.8)
+            time.sleep(1.5)
             data = meas.get_waveform_data()
             forward_score = objective_func(data)
 
@@ -566,7 +565,7 @@ def advanced_rosenbrock_search2(
             patience -= 1
             if patience > 0:
                 directions  = reconstruct_directions(directions, strategy="pairwise+cyclic", noise_scale=0.2)
-                step_sizes = np.ones(dim) * init_step_size
+
                 print(f"所有方向均失败，方向重构!!")
                 dir_count += 1
             else :
@@ -579,6 +578,7 @@ def advanced_rosenbrock_search2(
                 data = meas.get_waveform_data()
 
                 post_count += 1
+                dir_count = 0
                 best_params = params.copy()
                 best_score = objective_func(data)
                 step_sizes = np.ones(dim) * init_step_size
