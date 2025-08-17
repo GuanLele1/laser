@@ -457,9 +457,9 @@ def advanced_rosenbrock_search(
 def advanced_rosenbrock_search2(
     param_bounds = [(1,130), (1,130), (1,130), (1,130)],
     objective_func = compute_fml_objective,
-    init_step_size=4.0,
-    reward_factor= 1.5,
-    punish_factor= -0.7,
+    init_step_size=10.0,
+    reward_factor= 2,
+    punish_factor= -0.5,
     patience_limit=5,
     max_iter=100
 ):
@@ -488,12 +488,17 @@ def advanced_rosenbrock_search2(
     meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
 
+    #初始化电压，并加到epc上
     params  = np.array([np.random.uniform(low, high) for (low, high) in param_bounds])
     for i in range(4):
         ctrl.set_voltage(i + 1, params[i])
     time.sleep(1.5)
     data = meas.get_waveform_data()
 
+    post_count = 1  #统计选了多少个位置
+    dir_count = 1   #统计这是重构的第几个方向
+
+    print(f"================第{post_count}个位置=================")
     dim = len(params)
     best_params = params
     best_score = objective_func(data)
@@ -511,12 +516,12 @@ def advanced_rosenbrock_search2(
     iter_count = 0
 
     while iter_count < max_iter:
-        print(f"=============第{iter_count}轮探索=============")
-        improved = False
 
+        improved = False
+        print(f"---------第{dir_count}个方向组----------")
         for i in range(dim):
             # 当前探索方向
-            print(f"--------通道{i+1}探索中--------")
+            print(f"通道{i+1}探索中")
             direction = directions[i]
             delta = step_sizes[i] * direction
 
@@ -563,6 +568,7 @@ def advanced_rosenbrock_search2(
                 directions  = reconstruct_directions(directions, strategy="pairwise+cyclic", noise_scale=0.2)
                 step_sizes = np.ones(dim) * init_step_size
                 print(f"所有方向均失败，方向重构!!")
+                dir_count += 1
             else :
                 # 耐心耗尽，重启整个过程
                 print(f"!!耐心耗尽，重启!!")
@@ -572,11 +578,13 @@ def advanced_rosenbrock_search2(
                 time.sleep(1)
                 data = meas.get_waveform_data()
 
+                post_count += 1
                 best_params = params.copy()
                 best_score = objective_func(data)
                 step_sizes = np.ones(dim) * init_step_size
                 directions = np.eye(dim)
                 patience = patience_limit
+                print(f"================第{post_count}个位置=================")
 
 
     return best_params, best_score
