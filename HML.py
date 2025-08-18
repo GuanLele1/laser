@@ -455,13 +455,14 @@ def advanced_rosenbrock_search(
 
 
 def advanced_rosenbrock_search2(
-    param_bounds = [(1,130), (1,130), (1,130), (1,130)],
+    meas,
+    param_bounds = [(1,140), (1,140), (1,140), (1,140)],
     objective_func = compute_fml_objective,
     init_step_size=10.0,
     reward_factor= 2,
-    punish_factor= -0.5,
-    patience_limit=5,
-    max_iter=100
+    punish_factor= -0.8,
+    patience_limit=8,
+    max_iter=100,
 ):
     """
     实现论文中“高级 Rosenbrock 搜索算法（ARS）”，用于智能锁模算法中的参数优化。
@@ -484,8 +485,6 @@ def advanced_rosenbrock_search2(
     - history: 搜索轨迹（每次成功后的参数和目标值）
     """
     ctrl = PCDM02DigitalController(port='COM7')
-
-    meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
 
     #初始化电压，并加到epc上
@@ -590,8 +589,117 @@ def advanced_rosenbrock_search2(
     return best_params, best_score
 
 
+
+#随机碰撞恢复
+def random_collision_recovery(
+        meas,
+        last_best_params,
+        param_bounds=[(1, 140), (1, 140), (1, 140), (1, 140)],
+        objective_func = compute_fml_objective,
+        collision_range = 2.0,  # 碰撞范围，通常比 ARS 步长小
+        max_attempts = 30,  # 最大尝试次数
+        lock_threshold = 120  # 判断恢复成功的目标函数阈值
+):
+    """
+    随机碰撞恢复 (RCR) 算法：
+    以最近一次成功锁模的参数为中心，随机扰动偏振态参数来尝试恢复目标状态。
+
+    参数说明：
+    ----------
+    - last_best_params: array-like，上一次锁定成功的电压参数（长度为4）
+    - param_bounds: 每个参数的上下限 [(low, high), ...]
+    - objective_func: 目标函数，可根据测量数据计算分数
+    - collision_range: 碰撞范围（扰动幅度），小于 ARS 的步长
+    - max_attempts: 最大尝试次数
+    - lock_threshold: 判定恢复成功的目标函数值阈值
+
+    返回值：
+    -------
+    - success (bool): 是否恢复成功
+    - best_params: 恢复成功的参数（或最后一次尝试参数）
+    - best_score: 恢复成功的目标函数值（或最后一次尝试值）
+    """
+
+    ctrl = PCDM02DigitalController(port='COM7')
+    np.set_printoptions(threshold=np.inf)
+
+    best_params = np.array(last_best_params)
+    best_score = -np.inf
+
+    for attempt in range(max_attempts):
+        # 在 last_best_params 附近随机扰动
+        trial_params = best_params + np.random.uniform(-collision_range, collision_range, size=4)
+        # 保证在范围内
+        trial_params = np.clip(trial_params,
+                               [low for (low, _) in param_bounds],
+                               [high for (_, high) in param_bounds])
+
+        # 下发到 EPC
+        for ch in range(4):
+            ctrl.set_voltage(ch + 1, trial_params[ch])
+
+        # 稍微等待系统稳定
+        time.sleep(0.5)
+
+        # 测量波形并计算目标函数
+        data = meas.get_waveform_data()
+        score = objective_func(data)
+
+        print(f"[RCR] 尝试 {attempt + 1}/{max_attempts}, 参数: {trial_params}, 得分: {score}")
+
+        if score > best_score:
+            best_score = score
+            best_params = trial_params.copy()
+
+        if score >= lock_threshold:
+            print(f"[RCR] 成功在 {attempt + 1} 次内恢复锁模！参数: {trial_params}")
+            return True, trial_params, score
+
+    # 若到达这里，RCR 失败
+    print(f"[RCR] 恢复失败，需切换到 ARS 进行重锁定")
+    return False, best_params, best_score
+
+
+
+#主循环
+def human_like_main_loop():
+    meas = MeasurementSystem()  # 测量系统
+
+    while True:
+        print("\n=== 启动类人算法 (ARS) 进行搜索 ===")
+        best_params, best_score = advanced_rosenbrock_search2()
+
+        print(f"[MAIN] 初始锁模完成，电压: {best_params}, 分数: {best_score}")
+
+        # 开始监测循环
+        while True:
+            time.sleep(2)
+
+            data = meas.get_waveform_data()
+            score = compute_fml_objective(data)
+            print(f"[MAIN] 当前分数: {score}")
+
+            if score >= 120:
+                # 仍然锁模，继续监控
+                continue
+            else:
+                print("[MAIN] 检测到失锁，启动 RCR 尝试恢复")
+                success, recovered_params, recovered_score = random_collision_recovery(best_params)
+
+                if success:
+                    print("[MAIN] RCR 成功恢复锁模")
+                    best_params, best_score = recovered_params, recovered_score
+                    continue
+                else:
+                    print("[MAIN] RCR 失败，重新启动 ARS 搜索")
+                    break  # 跳出监测循环，回到外层启动 ARS
+
 if __name__ == "__main__":
-    advanced_rosenbrock_search2()
+    while 1 :
+        advanced_rosenbrock_search2()
+
+
+
     meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
     data = meas.get_waveform_data()
