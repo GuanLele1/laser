@@ -456,10 +456,10 @@ def advanced_rosenbrock_search(
 def advanced_rosenbrock_search2(
     param_bounds = [(1,130), (1,130), (1,130), (1,130)],
     objective_func = compute_fml_objective,
-    init_step_size=15.0,
+    init_step_size = 10.0,
     reward_factor= 2,
-    punish_factor= -0.6,
-    patience_limit=5,
+    punish_factor= -0.8,
+    patience_limit = 3,
     max_iter=100
 ):
     """
@@ -491,7 +491,7 @@ def advanced_rosenbrock_search2(
     params  = np.array([np.random.uniform(low, high) for (low, high) in param_bounds])
     for i in range(4):
         ctrl.set_voltage(i + 1, params[i])
-    time.sleep(1.5)
+    time.sleep(1)
     data = meas.get_waveform_data()
 
     post_count = 1  #统计选了多少个位置
@@ -531,7 +531,7 @@ def advanced_rosenbrock_search2(
             # 设置电压
             for j in range(4):
                 ctrl.set_voltage(i + 1, forward_params[i])
-            time.sleep(1.5)
+            time.sleep(0.5)
             data = meas.get_waveform_data()
             forward_score = objective_func(data)
 
