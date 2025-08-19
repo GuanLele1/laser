@@ -168,39 +168,54 @@ class MeasurementSystem:
 
 
     def get_waveform_data(self):
-        """获取示波器采集的波形数据"""
+        """
+        严格按 DS4000E 手册推荐的 RAW 波形读取流程
+        """
         if not self.osc:
             return None
 
         try:
-            self.osc.write(':ACQuire:MDEPth:AUTO OFF')  # 关闭自动模式
+            # S1: 停止采集
+            self.osc.write(":STOP")
 
-            # 设置波形格式为字节数据
+            # S2: 设置采集通道
+            self.osc.write(f":WAV:SOUR CHAN1")
+
+            # S3: 设置波形模式 RAW（内存原始数据）
+            self.osc.write(":WAV:MODE RAW")
+
+            # S4: 设置采样点数
+            self.osc.write(f":WAV:POIN 1400")
+
+            # S5: 数据格式 BYTE（二进制字节）
             self.osc.write(":WAV:FORM BYTE")
-            self.osc.write(":WAV:MODE RAW")  # 设置为RAW模式
 
-            # 获取波形数据
-            self.osc.write(":WAV:POIN MAX")
-            self.osc.write(":WAV:DATA?")
-            waveform_data = self.osc.read_raw()
+            # S6: 开始波形数据读取
+            self.osc.write(":WAV:BEG")
 
-            # 解析返回的波形数据
-            # 解析前缀（获取实际点数）
-            prefix = waveform_data[0:1].decode()
-            if prefix != '#':
-                raise ValueError("数据格式错误")
-            n = int(waveform_data[1:2].decode())
-            length_str = waveform_data[2:2 + n].decode()
-            data_length = int(length_str)
-            valid_data = waveform_data[2 + n: 2 + n + data_length]
-            waveform_array = np.frombuffer(valid_data, dtype=np.uint8)
+            # S7: 等待状态就绪
+            while True:
+                stat = self.osc.query(":WAV:STAT?").strip()
+                if stat == "IDLE":
+                    break
+                time.sleep(0.05)
 
-            # 将波形数据转换为电压值
-            # 你需要根据示波器的设置（YUNIT）来调整这个比例
-            # voltage_scale = 0.01  # 假设单位是0.01V/单位，根据实际情况调整
-            # waveform_array = (waveform_array - 128) * voltage_scale  # 归一化和电压换算
+            # S8: 获取波形数据
+            raw_data = self.osc.query_binary_values(":WAV:DATA?", datatype='B', container=np.array)
 
-            return waveform_array
+            # S9: 结束波形读取
+            self.osc.write(":WAV:END")
+
+            # Y 方向刻度和偏移（实际电压转换用）
+            yinc = float(self.osc.query(":WAV:YINC?"))
+            yorig = float(self.osc.query(":WAV:YOR?"))
+            yref = float(self.osc.query(":WAV:YREF?"))
+
+            # 根据 SCPI 返回参数换算成真实电压值
+            volt_data = (raw_data - yref) * yinc + yorig
+
+            print(f"实际点数: {len(volt_data)}")
+            return volt_data
 
         except pyvisa.Error as e:
             print(f"获取波形数据失败: {str(e)}")
@@ -263,7 +278,7 @@ def dual_region_count_once(data, Nperiod_pts, pulse_width_pts=10, threshold1=0.8
 
 
 
-def     compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold1=0.9, threshold2=0.7):
+def compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold1=0.9, threshold2=0.7):
     """
     计算 FML 模式下的目标函数值（严格按照绿色区判断，不采用主峰简化优化）
 
@@ -454,13 +469,14 @@ def advanced_rosenbrock_search(
 
 
 def advanced_rosenbrock_search2(
-    param_bounds = [(1,130), (1,130), (1,130), (1,130)],
+    meas,
+    param_bounds = [(1,140), (1,140), (1,140), (1,140)],
     objective_func = compute_fml_objective,
-    init_step_size = 10.0,
+    init_step_size=10.0,
     reward_factor= 2,
     punish_factor= -0.8,
-    patience_limit = 3,
-    max_iter=100
+    patience_limit=8,
+    max_iter=100,
 ):
     """
     实现论文中“高级 Rosenbrock 搜索算法（ARS）”，用于智能锁模算法中的参数优化。
@@ -483,15 +499,13 @@ def advanced_rosenbrock_search2(
     - history: 搜索轨迹（每次成功后的参数和目标值）
     """
     ctrl = PCDM02DigitalController(port='COM7')
-
-    meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
 
     #初始化电压，并加到epc上
     params  = np.array([np.random.uniform(low, high) for (low, high) in param_bounds])
     for i in range(4):
         ctrl.set_voltage(i + 1, params[i])
-    time.sleep(1)
+    time.sleep(1.5)
     data = meas.get_waveform_data()
 
     post_count = 1  #统计选了多少个位置
@@ -531,7 +545,7 @@ def advanced_rosenbrock_search2(
             # 设置电压
             for j in range(4):
                 ctrl.set_voltage(i + 1, forward_params[i])
-            time.sleep(0.5)
+            time.sleep(0.8)
             data = meas.get_waveform_data()
             forward_score = objective_func(data)
 
@@ -565,7 +579,7 @@ def advanced_rosenbrock_search2(
             patience -= 1
             if patience > 0:
                 directions  = reconstruct_directions(directions, strategy="pairwise+cyclic", noise_scale=0.2)
-
+                step_sizes = np.ones(dim) * init_step_size
                 print(f"所有方向均失败，方向重构!!")
                 dir_count += 1
             else :
@@ -578,7 +592,6 @@ def advanced_rosenbrock_search2(
                 data = meas.get_waveform_data()
 
                 post_count += 1
-                dir_count = 0
                 best_params = params.copy()
                 best_score = objective_func(data)
                 step_sizes = np.ones(dim) * init_step_size
@@ -590,8 +603,120 @@ def advanced_rosenbrock_search2(
     return best_params, best_score
 
 
+
+#随机碰撞恢复
+def random_collision_recovery(
+        meas,
+        last_best_params,
+        param_bounds=[(1, 140), (1, 140), (1, 140), (1, 140)],
+        objective_func = compute_fml_objective,
+        collision_range = 2.0,  # 碰撞范围，通常比 ARS 步长小
+        max_attempts = 30,  # 最大尝试次数
+        lock_threshold = 120  # 判断恢复成功的目标函数阈值
+):
+    """
+    随机碰撞恢复 (RCR) 算法：
+    以最近一次成功锁模的参数为中心，随机扰动偏振态参数来尝试恢复目标状态。
+
+    参数说明：
+    ----------
+    - last_best_params: array-like，上一次锁定成功的电压参数（长度为4）
+    - param_bounds: 每个参数的上下限 [(low, high), ...]
+    - objective_func: 目标函数，可根据测量数据计算分数
+    - collision_range: 碰撞范围（扰动幅度），小于 ARS 的步长
+    - max_attempts: 最大尝试次数
+    - lock_threshold: 判定恢复成功的目标函数值阈值
+
+    返回值：
+    -------
+    - success (bool): 是否恢复成功
+    - best_params: 恢复成功的参数（或最后一次尝试参数）
+    - best_score: 恢复成功的目标函数值（或最后一次尝试值）
+    """
+
+    ctrl = PCDM02DigitalController(port='COM7')
+    np.set_printoptions(threshold=np.inf)
+
+    best_params = np.array(last_best_params)
+    best_score = -np.inf
+
+    for attempt in range(max_attempts):
+        # 在 last_best_params 附近随机扰动
+        trial_params = best_params + np.random.uniform(-collision_range, collision_range, size=4)
+        # 保证在范围内
+        trial_params = np.clip(trial_params,
+                               [low for (low, _) in param_bounds],
+                               [high for (_, high) in param_bounds])
+
+        # 下发到 EPC
+        for ch in range(4):
+            ctrl.set_voltage(ch + 1, trial_params[ch])
+
+        # 稍微等待系统稳定
+        time.sleep(0.5)
+
+        # 测量波形并计算目标函数
+        data = meas.get_waveform_data()
+        score = objective_func(data)
+
+        print(f"[RCR] 尝试 {attempt + 1}/{max_attempts}, 参数: {trial_params}, 得分: {score}")
+
+        if score > best_score:
+            best_score = score
+            best_params = trial_params.copy()
+
+        if score >= lock_threshold:
+            print(f"[RCR] 成功在 {attempt + 1} 次内恢复锁模！参数: {trial_params}")
+            return True, trial_params, score
+
+    # 若到达这里，RCR 失败
+    print(f"[RCR] 恢复失败，需切换到 ARS 进行重锁定")
+    return False, best_params, best_score
+
+
+
+#主循环
+def human_like_main_loop():
+    meas = MeasurementSystem()  # 测量系统
+
+    while True:
+        print("\n=== 启动类人算法 (ARS) 进行搜索 ===")
+        best_params, best_score = advanced_rosenbrock_search2()
+
+        print(f"[MAIN] 初始锁模完成，电压: {best_params}, 分数: {best_score}")
+
+        # 开始监测循环
+        while True:
+            time.sleep(2)
+
+            data = meas.get_waveform_data()
+            score = compute_fml_objective(data)
+            print(f"[MAIN] 当前分数: {score}")
+
+            if score >= 120:
+                # 仍然锁模，继续监控
+                continue
+            else:
+                print("[MAIN] 检测到失锁，启动 RCR 尝试恢复")
+                success, recovered_params, recovered_score = random_collision_recovery(best_params)
+
+                if success:
+                    print("[MAIN] RCR 成功恢复锁模")
+                    best_params, best_score = recovered_params, recovered_score
+                    continue
+                else:
+                    print("[MAIN] RCR 失败，重新启动 ARS 搜索")
+                    break  # 跳出监测循环，回到外层启动 ARS
+
 if __name__ == "__main__":
-    advanced_rosenbrock_search2()
+    meas = MeasurementSystem()
+    data = meas.get_waveform_data()
+    forward_score = compute_fml_objective(data)
+    print(forward_score)
+    #advanced_rosenbrock_search2()
+
+
+
     meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
     data = meas.get_waveform_data()
