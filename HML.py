@@ -168,40 +168,54 @@ class MeasurementSystem:
 
 
     def get_waveform_data(self):
-        """获取示波器采集的波形数据"""
+        """
+        严格按 DS4000E 手册推荐的 RAW 波形读取流程
+        """
         if not self.osc:
             return None
 
         try:
-            self.osc.write(':ACQuire:MDEPth:AUTO OFF')  # 关闭自动模式
+            # S1: 停止采集
+            self.osc.write(":STOP")
 
-            # 设置波形格式为字节数据
+            # S2: 设置采集通道
+            self.osc.write(f":WAV:SOUR CHAN1")
+
+            # S3: 设置波形模式 RAW（内存原始数据）
+            self.osc.write(":WAV:MODE RAW")
+
+            # S4: 设置采样点数
+            self.osc.write(f":WAV:POIN 1400")
+
+            # S5: 数据格式 BYTE（二进制字节）
             self.osc.write(":WAV:FORM BYTE")
-            self.osc.write(":WAV:MODE RAW")  # 设置为RAW模式
 
-            # 获取波形数据
-            self.osc.write(":WAV:POIN MAX")
-            self.osc.write(":WAV:DATA?")
-            waveform_data = self.osc.read_raw()
+            # S6: 开始波形数据读取
+            self.osc.write(":WAV:BEG")
 
-            # 解析返回的波形数据
-            # 解析前缀（获取实际点数）
-            prefix = waveform_data[0:1].decode()
-            if prefix != '#':
-                raise ValueError("数据格式错误")
-            n = int(waveform_data[1:2].decode())
-            length_str = waveform_data[2:2 + n].decode()
-            data_length = int(length_str)
-            valid_data = waveform_data[2 + n: 2 + n + data_length]
-            waveform_array = np.frombuffer(valid_data, dtype=np.uint8)
-            print(f"实际点数: {len(waveform_array)}")
+            # S7: 等待状态就绪
+            while True:
+                stat = self.osc.query(":WAV:STAT?").strip()
+                if stat == "IDLE":
+                    break
+                time.sleep(0.05)
 
-            # 将波形数据转换为电压值
-            # 你需要根据示波器的设置（YUNIT）来调整这个比例
-            # voltage_scale = 0.01  # 假设单位是0.01V/单位，根据实际情况调整
-            # waveform_array = (waveform_array - 128) * voltage_scale  # 归一化和电压换算
+            # S8: 获取波形数据
+            raw_data = self.osc.query_binary_values(":WAV:DATA?", datatype='B', container=np.array)
 
-            return waveform_array
+            # S9: 结束波形读取
+            self.osc.write(":WAV:END")
+
+            # Y 方向刻度和偏移（实际电压转换用）
+            yinc = float(self.osc.query(":WAV:YINC?"))
+            yorig = float(self.osc.query(":WAV:YOR?"))
+            yref = float(self.osc.query(":WAV:YREF?"))
+
+            # 根据 SCPI 返回参数换算成真实电压值
+            volt_data = (raw_data - yref) * yinc + yorig
+
+            print(f"实际点数: {len(volt_data)}")
+            return volt_data
 
         except pyvisa.Error as e:
             print(f"获取波形数据失败: {str(e)}")
@@ -264,7 +278,7 @@ def dual_region_count_once(data, Nperiod_pts, pulse_width_pts=10, threshold1=0.8
 
 
 
-def     compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold1=0.9, threshold2=0.7):
+def compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold1=0.9, threshold2=0.7):
     """
     计算 FML 模式下的目标函数值（严格按照绿色区判断，不采用主峰简化优化）
 
@@ -695,8 +709,11 @@ def human_like_main_loop():
                     break  # 跳出监测循环，回到外层启动 ARS
 
 if __name__ == "__main__":
-    while 1 :
-        advanced_rosenbrock_search2()
+    meas = MeasurementSystem()
+    data = meas.get_waveform_data()
+    forward_score = compute_fml_objective(data)
+    print(forward_score)
+    #advanced_rosenbrock_search2()
 
 
 
