@@ -179,24 +179,25 @@ class MeasurementSystem:
             self.osc.write(":STOP")
 
             # S2: 设置采集通道
-            self.osc.write(f":WAV:SOUR CHAN1")
+            self.osc.write(f":WAV:SOURce CHAN1")
 
             # S3: 设置波形模式 RAW（内存原始数据）
             self.osc.write(":WAV:MODE RAW")
 
             # S4: 设置采样点数
-            self.osc.write(f":WAV:POIN 1400")
+            self.osc.write(f":WAVeform:POINts 14000")
 
             # S5: 数据格式 BYTE（二进制字节）
             self.osc.write(":WAV:FORM BYTE")
+            self.osc.write(":WAV:RESet")
 
             # S6: 开始波形数据读取
-            self.osc.write(":WAV:BEG")
+            self.osc.write(":WAV:BEGin")
 
             # S7: 等待状态就绪
             while True:
-                stat = self.osc.query(":WAV:STAT?").strip()
-                if stat == "IDLE":
+                stat = self.osc.query(":WAV:STATus?").strip()
+                if stat == "IDLE,14000":
                     break
                 time.sleep(0.05)
 
@@ -206,16 +207,18 @@ class MeasurementSystem:
             # S9: 结束波形读取
             self.osc.write(":WAV:END")
 
-            # Y 方向刻度和偏移（实际电压转换用）
-            yinc = float(self.osc.query(":WAV:YINC?"))
-            yorig = float(self.osc.query(":WAV:YOR?"))
-            yref = float(self.osc.query(":WAV:YREF?"))
-
-            # 根据 SCPI 返回参数换算成真实电压值
-            volt_data = (raw_data - yref) * yinc + yorig
-
-            print(f"实际点数: {len(volt_data)}")
-            return volt_data
+            # 重新开始采集
+            self.osc.write(":RUN")
+            # # Y 方向刻度和偏移（实际电压转换用）
+            # yinc = float(self.osc.query(":WAV:YINC?"))
+            # yorig = float(self.osc.query(":WAV:YOR?"))
+            # yref = float(self.osc.query(":WAV:YREF?"))
+            #
+            # # 根据 SCPI 返回参数换算成真实电压值
+            # volt_data = (raw_data - yref) * yinc + yorig
+            #
+            # print(f"实际点数: {len(volt_data)}")
+            return raw_data[10000:]#volt_data
 
         except pyvisa.Error as e:
             print(f"获取波形数据失败: {str(e)}")
@@ -278,7 +281,7 @@ def dual_region_count_once(data, Nperiod_pts, pulse_width_pts=10, threshold1=0.8
 
 
 
-def compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold1=0.9, threshold2=0.7):
+def compute_fml_objective(data, Nperiod_pts = 326, pulse_width_pts=12, threshold1=0.9, threshold2=0.4):
     """
     计算 FML 模式下的目标函数值（严格按照绿色区判断，不采用主峰简化优化）
 
@@ -299,7 +302,7 @@ def compute_fml_objective(data, Nperiod_pts = 406, pulse_width_pts=10, threshold
         data, Nperiod_pts, pulse_width_pts, threshold1, threshold2
     )
 
-    if green_counts < C_ideal or nongreen_counts > 0:
+    if green_counts < C_ideal - 3 or nongreen_counts > 0:
         return 0
 
     max_val = np.max(data)
@@ -474,8 +477,8 @@ def advanced_rosenbrock_search2(
     objective_func = compute_fml_objective,
     init_step_size=10.0,
     reward_factor= 2,
-    punish_factor= -0.8,
-    patience_limit=8,
+    punish_factor= -0.7,
+    patience_limit=5,
     max_iter=100,
 ):
     """
@@ -505,7 +508,7 @@ def advanced_rosenbrock_search2(
     params  = np.array([np.random.uniform(low, high) for (low, high) in param_bounds])
     for i in range(4):
         ctrl.set_voltage(i + 1, params[i])
-    time.sleep(1.5)
+    time.sleep(0.1)
     data = meas.get_waveform_data()
 
     post_count = 1  #统计选了多少个位置
@@ -545,7 +548,7 @@ def advanced_rosenbrock_search2(
             # 设置电压
             for j in range(4):
                 ctrl.set_voltage(i + 1, forward_params[i])
-            time.sleep(0.8)
+            time.sleep(0.2)
             data = meas.get_waveform_data()
             forward_score = objective_func(data)
 
@@ -588,10 +591,11 @@ def advanced_rosenbrock_search2(
                 params = np.array([np.random.uniform(low, high) for (low, high) in param_bounds])
                 for i in range(4):
                         ctrl.set_voltage(i + 1, params[i])
-                time.sleep(1)
+                time.sleep(0.1)
                 data = meas.get_waveform_data()
 
                 post_count += 1
+                dir_count = 0
                 best_params = params.copy()
                 best_score = objective_func(data)
                 step_sizes = np.ones(dim) * init_step_size
@@ -710,16 +714,15 @@ def human_like_main_loop():
 
 if __name__ == "__main__":
     meas = MeasurementSystem()
-    data = meas.get_waveform_data()
-    forward_score = compute_fml_objective(data)
-    print(forward_score)
-    #advanced_rosenbrock_search2()
-
-
-
-    meas = MeasurementSystem()
     np.set_printoptions(threshold=np.inf)
     data = meas.get_waveform_data()
+    print(data)
+    l = len(data)
+    print(l)
     forward_score = compute_fml_objective(data)
     print(forward_score)
+    #advanced_rosenbrock_search2(meas)
+
+
+
 
