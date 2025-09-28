@@ -6,7 +6,7 @@ from scipy.signal import savgol_filter
 x_nm = []
 y_dBm = []
 
-with open("osa_formatted_output.txt", "r") as f:
+with open("osa_formatted_output_meas.txt", "r") as f:
     for line in f:
         # 忽略空行
         if not line.strip():
@@ -32,7 +32,7 @@ with open("osa_formatted_output.txt", "r") as f:
 y_dBm = savgol_filter(y_dBm, window_length=21, polyorder=3)
 
 # 查找峰值
-peaks, properties = find_peaks(y_dBm, height=-70, distance=20, prominence=0.5)
+peaks, properties = find_peaks(y_dBm, height=-70, distance=60, prominence=0.5)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)
