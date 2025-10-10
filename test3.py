@@ -21,8 +21,8 @@ with open("osa_formatted_output.txt", "r", encoding="utf-8") as f:
         except (ValueError, IndexError):
             print("跳过无法解析的行:", line)
 
-y1 = savgol_filter(y1, window_length=21, polyorder=3)
-peaks1, _ = find_peaks(y1, height=-70, distance=60, prominence=0.5)
+y1 = savgol_filter(y1, window_length=31, polyorder=3)
+peaks1, _ = find_peaks(y1, height=-70, distance=60, prominence=0.5, width=35)
 
 # ------------------------------
 # 打开第二个文件 osa_formatted_output_meas.txt
@@ -43,8 +43,8 @@ with open("osa_formatted_output_meas.txt", "r", encoding="utf-8") as f:
         except (ValueError, IndexError):
             print("跳过无法解析的行:", line)
 
-y2 = savgol_filter(y2, window_length=21, polyorder=3)
-peaks2, _ = find_peaks(y2, height=-70, distance=60, prominence=0.5)
+y2 = savgol_filter(y2, window_length=31, polyorder=3)
+peaks2, _ = find_peaks(y2, height=-70, distance=60, prominence=0.5,width = 30)
 
 # ------------------------------
 # 画图：一个画框里放两幅图（上下排列）

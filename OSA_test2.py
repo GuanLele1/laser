@@ -87,10 +87,7 @@ class OSA_MeasurementSystem:
         x_nm = [float(x) * 1e9 for x in xdata.strip().split(",")]  # m → nm
         y_dBm = [float(y) for y in ydata.strip().split(",")]
 
-        # ------------------------------
-        # 强度限幅：小于 -65 的都改为 -65
-        # ------------------------------
-        y_dBm = [max(y, -65.0) for y in y_dBm]
+
 
         format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
 
@@ -137,6 +134,11 @@ def Get_Peaks(y_dBm, x_nm):
         y_dBm：从光谱仪获取的强度数组
         x_nm：从光谱仪获取的位置数组
     """
+
+    # ------------------------------
+    # 强度限幅：小于 -65 的都改为 -65
+    # ------------------------------
+    y_dBm = [max(y, -65.0) for y in y_dBm]
 
     # 对功率数据应用 Savitzky-Golay 滤波器
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
@@ -194,50 +196,75 @@ class PCDM02DigitalController:
         self.ser.close()
 
 
-def fitness_peaks(meas_peaks, templ_peaks, tol=0.15, alpha=0.2, beta=1.5, gamma=1):
+def fitness_symmetry(meas_peaks, target_count, w_pos=0.6, w_amp=0.4, huge=np.inf):
     """
-    最简单的峰匹配适应度（最小化越好）
-    - meas_peaks, templ_peaks: [(x, a)]，x为位置(同单位)，a为强度
-    - tol: 位置容差(与x同单位)，用于把位置误差无量纲化
-    - alpha/beta/gamma: 三项权重（位置/强度/峰数）
-    思路：两边按x排序，按索引逐一比；多出来的峰走“数量惩罚”。
+    以“峰的数量 + 对称性（位置+强度）”为判据的适应度（越小越好）
+    - meas_peaks: [(x, a)]，x=波长/频率位置，a=幅度（dBm 也可，内部会归一化）
+    - target_count: 目标峰数（必须满足，否则直接给大惩罚）
+    - w_pos / w_amp: 位置对称项与强度对称项的权重（和=1较好）
+    - 返回: 浮点分数（越小越好）
+    规则：
+      1) 首先必须满足“峰的数量 = target_count”。若多/少，直接大惩罚。
+      2) 若等于 target_count：
+         - odd: 以“中间峰”为对称轴
+         - even: 以“中间两峰的中点”为对称轴
+         - 计算两侧配对的‘位置距离对称误差’与‘强度对称误差’，加权求和。
     """
-    if len(templ_peaks) == 0:
-        return 1e6
+    if target_count <= 0:
+        return huge
 
-    # 1) 排序
-    meas = sorted(meas_peaks, key=lambda t: t[0])
-    templ = sorted(templ_peaks, key=lambda t: t[0])
+    # 没有峰/目标不匹配 → 大惩罚
+    if meas_peaks is None or len(meas_peaks) != target_count:
+        return huge
 
-    # 2) 强度归一化（避免量纲问题）
-    def norm_peaks(P):
-        xs = np.array([p[0] for p in P], dtype=float)
-        as_ = np.array([p[1] for p in P], dtype=float)
-        s = as_.sum()
-        as_ = as_ / s
-        return xs, as_
 
-    print(meas_peaks)
-    xm, am = norm_peaks(meas)
-    xt, at = norm_peaks(templ)
-    print(f"at：{at}")
-    print(f"am：{am}")
+    # 2) 对称性评估：先按 x 从小到大
+    meas_peaks_sorted = sorted(meas_peaks, key=lambda t: t[0])
+    xs = np.array([p[0] for p in meas_peaks_sorted], dtype=float)
+    amps = np.array([p[1] for p in meas_peaks_sorted], dtype=float)
 
-    # 3) 对齐长度，逐一比较（按索引）
-    k = min(len(xm), len(xt))
-    if k == 0:
-        return 1e6
+    # 幅度归一化（避免量纲、便于比较）
+    # 注意 dBm 是对数；这里我们只做相对对称性，不做线性换算，保持简单一致性
+    amps_n = amps / np.sum(amps)
 
-    #pos_err = np.mean(((xm[:k] - xt[:k]) / tol) ** 2) # 位置均方误差（按容差归一）
-    amp_err = np.mean((am[:k] - at[:k]) ** 2)               # 强度均方误差
-    count_err = abs(len(xm) - len(xt)) / max(1, len(xt))       # 峰数相对误差
-    #print(f"pos_err:{pos_err}")
-    print(f"amp_err:{amp_err}")
-    print(f"count_err:{count_err}")
+    n = len(xs)
+    # 计算对称轴
+    if n % 2 == 1:
+        # 奇数：以中间峰为对称轴
+        mid = n // 2
+        axis = xs[mid]
+        # 两侧配对： (mid-1, mid+1), (mid-2, mid+2), ...
+        pairs = [(mid - k, mid + k) for k in range(1, mid + 1)]
+    else:
+        # 偶数：以中间两峰的中点为轴
+        mid_left = n // 2 - 1
+        mid_right = n // 2
+        axis = 0.5 * (xs[mid_left] + xs[mid_right])
+        # 配对： (mid_left-0, mid_right+0), (mid_left-1, mid_right+1), ...
+        pairs = [(mid_left - k, mid_right + k) for k in range(0, mid_left + 1)]
 
-    # 4) 综合得分
-    F =beta * amp_err + gamma * count_err
-    return float(F)
+    # 3) 计算对称误差
+    # 位置对称：理想情况是 xs[i] 与 xs[j] 关于 axis 等距 → |(xs[i]-axis) + (xs[j]-axis)| = 0
+    # 强度对称：理想情况是 amps_n[i] == amps_n[j]
+    pos_errs = []
+    amp_errs = []
+    for i, j in pairs:
+        if i < 0 or j >= n:
+            return huge  # 索引异常（理论不该发生）
+        di = xs[i] - axis
+        dj = xs[j] - axis
+        pos_errs.append((di + dj)**2)                # 等距对称误差（平方）
+        print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
+        amp_errs.append((amps_n[i] - amps_n[j])**2)  # 强度对称误差（平方）
+
+    # 归一：避免不同数量配对下的偏置
+    pos_err = float(np.mean(pos_errs)) if pos_errs else 0.0
+    amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
+    print(f"位置误差：{pos_err}，强度误差：{amp_err}")
+
+    # 4) 汇总
+    fitness = w_pos * pos_err + w_amp * amp_err
+    return fitness
 
 
 def voltage_pso_optimization(
@@ -310,7 +337,7 @@ def voltage_pso_optimization(
 
 
 
-                fitness = fitness_peaks(meas_peaks, templ_peaks)
+                fitness = fitness_symmetry(meas_peaks, 5)
 
                 # 更新个体最优
                 if fitness is not None and fitness < personal_best_scores[i]:
@@ -322,10 +349,13 @@ def voltage_pso_optimization(
                     global_best_score = personal_best_scores[i]
                     global_best_position = personal_best_positions[i]
 
-                print(f"粒子 {i+1} 电压 {v} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
+                print(f"粒子 {i+1} 电压 {v} -> 峰的个数：{len(y_dBm_peaks)} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
 
-                if fitness <= 0.0005:
+
+                # ❗❗❗❗ 退出条件
+                if fitness <= 25:
                     return
+
 
             # 粒子群速度与位置更新
             # w * velocities[i] 是惯性项，延续上一步的速度，w越大表示探索性越强，越小表示探索越保守
@@ -369,10 +399,15 @@ def voltage_pso_optimization(
 
 
 if __name__ == "__main__":
-    osa = OSA_MeasurementSystem(ip="192.168.1.3")
-    y_dBm, x_nm = osa.read_OSA_exist()
-    format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
-    # voltage_pso_optimization()
+    # osa = OSA_MeasurementSystem(ip="192.168.1.3")
+    # y_dBm, x_nm = osa.read_OSA()
+    # y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
+    # meas_peaks = list(zip(x_nm_peaks, y_dBm_peaks))
+    #
+    # fitness = fitness_symmetry(meas_peaks, 5)
+    # print(fitness)
+    # format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
+    voltage_pso_optimization()
 
 # # 打印部分数据
 # #print(f"共 {npts} 点")

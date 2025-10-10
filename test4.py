@@ -18,8 +18,8 @@ with open("osa_formatted_output_meas.txt", "r") as f:
             wavelength = float(parts[0])     # 1500.00
             power     = float(parts[3])     # -45.23
 
-            if power < -61:
-                power = -61
+            # if power < -61:
+            #     power = -61
 
             x_nm.append(wavelength)
             y_dBm.append(power)
@@ -33,7 +33,7 @@ with open("osa_formatted_output_meas.txt", "r") as f:
 y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
 # 查找峰值
-peaks, properties = find_peaks(y_dBm, height=-70, distance=200, prominence=0.5, width=30)
+peaks, properties = find_peaks(y_dBm, height=-70, distance=50, prominence=0.2, width=20)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)
