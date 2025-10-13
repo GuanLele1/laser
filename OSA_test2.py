@@ -134,17 +134,11 @@ def Get_Peaks(y_dBm, x_nm):
         y_dBm：从光谱仪获取的强度数组
         x_nm：从光谱仪获取的位置数组
     """
-
-    # ------------------------------
-    # 强度限幅：小于 -65 的都改为 -65
-    # ------------------------------
-    y_dBm = [max(y, -65.0) for y in y_dBm]
-
     # 对功率数据应用 Savitzky-Golay 滤波器
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
     # 查找峰值
-    peaks, properties = find_peaks(y_dBm, height=-70, distance=200, prominence=0.8, width=30)
+    peaks, properties = find_peaks(y_dBm, height=-70, prominence=0.2, width=20)
 
     # #画图
     # plt.clf()
@@ -159,7 +153,7 @@ def Get_Peaks(y_dBm, x_nm):
     # plt.show(block=False)
     # time.sleep(0.2)
 
-    return y_dBm[peaks], np.array(x_nm)[peaks]
+    return y_dBm[peaks], np.array(x_nm)[peaks], peaks, properties, y_dBm
 
 
 
@@ -196,7 +190,7 @@ class PCDM02DigitalController:
         self.ser.close()
 
 
-def fitness_symmetry(meas_peaks, target_count, w_pos=0.6, w_amp=0.4, huge=np.inf):
+def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf):
     """
     以“峰的数量 + 对称性（位置+强度）”为判据的适应度（越小越好）
     - meas_peaks: [(x, a)]，x=波长/频率位置，a=幅度（dBm 也可，内部会归一化）
@@ -253,12 +247,16 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=0.6, w_amp=0.4, huge=np.inf
             return huge  # 索引异常（理论不该发生）
         di = xs[i] - axis
         dj = xs[j] - axis
-        pos_errs.append((di + dj)**2)                # 等距对称误差（平方）
+
+        # 计算对称轴 axis 后，先定义尺度 L（任选一种）
+        L = np.max(np.abs(xs - axis))  # 选半跨度（稳）
+
+        pos_errs.append(((di + dj) / L)**2)                # 等距对称误差（平方）
         print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
         amp_errs.append((amps_n[i] - amps_n[j])**2)  # 强度对称误差（平方）
 
     # 归一：避免不同数量配对下的偏置
-    pos_err = float(np.mean(pos_errs)) if pos_errs else 0.0
+    pos_err = float(np.mean(pos_errs)) / 4 if pos_errs else 0.0
     amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
     print(f"位置误差：{pos_err}，强度误差：{amp_err}")
 

@@ -1,8 +1,12 @@
 import numpy as np
+import  OSA_test2
 from fontTools.unicodedata import block
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
+
+
+
 
 x_nm = []
 y_dBm = []
@@ -26,14 +30,29 @@ with open("osa_formatted_output_meas.txt", "r") as f:
         except (ValueError, IndexError):
             print("跳过无法解析的行:", line)
 
-# 转换为 NumPy 数组
-#y_dBm = np.array(y_dBm)
 
-# 对功率数据应用 Savitzky-Golay 滤波器
-y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
-# 查找峰值
-peaks, properties = find_peaks(y_dBm, height=-70, distance=50, prominence=0.2, width=20)
+# ========= 新增：将小于 -150 dBm 的点替换为其相邻上一个值 =========
+if y_dBm:
+    # 从第二个点开始，遇到小于 -150 的就用上一个值替换
+    for i in range(1, len(y_dBm)):
+        if y_dBm[i] < -150:
+            y_dBm[i] = y_dBm[i - 1]
+
+    # 若第一个点小于 -150，则用后面第一个非异常值替代（若存在）
+    if y_dBm[0] < -150:
+        for j in range(1, len(y_dBm)):
+            if y_dBm[j] >= -150:
+                y_dBm[0] = y_dBm[j]
+                break
+
+# # 转换为 NumPy 数组
+# y_dBm = np.array(y_dBm)
+
+
+y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test2.Get_Peaks(y_dBm, x_nm)
+meas_peaks  = list(zip(x_nm_peak, y_dBm_peak))
+fitness = OSA_test2.fitness_symmetry(meas_peaks, 7)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)
@@ -56,6 +75,9 @@ for i, peak in enumerate(peaks):
     print(f"  左谷: {left_x:.2f} nm, 右谷: {right_x:.2f} nm")
     print(f"  宽度: {width_pts:.1f} 点, 约 {width_nm:.2f} nm")
     print("-" * 40)
+
+
+print(f"该光谱的适应度值为{fitness}")
 
 # 绘图
 plt.plot(x_nm, y_dBm, label="Smoothed Signal")
