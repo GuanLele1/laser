@@ -176,19 +176,76 @@ class PCDM02DigitalController:
 
 #取峰及其属性
 def Get_Peaks(y_dBm, x_nm):
-    """
-    从光谱图中分析出峰值
-    参数:
-        y_dBm：从光谱仪获取的强度数组
-        x_nm：从光谱仪获取的位置数组
-    """
-    # 对功率数据应用 Savitzky-Golay 滤波器
+
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
-    # 查找峰值
-    peaks, properties = find_peaks(y_dBm, height=-65, prominence=0.2, width=10)
+    peaks, properties = find_peaks(
+        y_dBm, height=-65, prominence=0.2, width=10
+    )
 
-    return y_dBm[peaks], np.array(x_nm)[peaks], peaks, properties, y_dBm
+    if len(peaks) == 0:
+        return y_dBm[peaks], np.array(x_nm)[peaks], peaks, properties, y_dBm
+
+    x_nm = np.asarray(x_nm)
+    y_dBm = np.asarray(y_dBm)
+    peaks = np.asarray(peaks, dtype=int)
+
+    # --- 先记录 SciPy 原始的 left/right bases 和宽度 ---
+    orig_left  = properties["left_bases"].copy()
+    orig_right = properties["right_bases"].copy()
+    orig_width_pts = properties["widths"].copy()
+    orig_width_nm  = x_nm[orig_right] - x_nm[orig_left]
+
+    # --- 先找所有“局部谷底” ---
+    valleys, _ = find_peaks(-y_dBm)
+
+    # 新的左右谷底（默认先用原始的）
+    left_bases  = orig_left.copy()
+    right_bases = orig_right.copy()
+
+    for i, p in enumerate(peaks):
+
+        # ===== 中间峰（非首非尾） → 使用最近谷底 =====
+        if 0 < i < len(peaks) - 1:
+
+            # 最近左谷
+            v_left = valleys[valleys < p]
+            if v_left.size > 0:
+                left_bases[i] = v_left[-1]
+
+            # 最近右谷
+            v_right = valleys[valleys > p]
+            if v_right.size > 0:
+                right_bases[i] = v_right[0]
+
+        # ===== 最左峰（i == 0） → 完全保持 SciPy 原始 =====
+        elif i == 0:
+            left_bases[i]  = orig_left[i]
+            right_bases[i] = orig_right[i]
+
+        # ===== 最右峰（i == 最后） → 完全保持 SciPy 原始 =====
+        elif i == len(peaks) - 1:
+            left_bases[i]  = orig_left[i]
+            right_bases[i] = orig_right[i]
+
+    # ---- 基于新的左右谷底更新宽度（仅中间峰） ----
+    new_width_pts = right_bases - left_bases
+    new_width_nm  = x_nm[right_bases] - x_nm[left_bases]
+
+    # 但最左峰、最右峰的宽度改回“原始 SciPy”
+    new_width_pts[0]  = orig_width_pts[0] * 2.5
+    new_width_nm[0]   = new_width_pts[0] * 0.04
+
+    new_width_pts[-1] = orig_width_pts[-1] * 2.5
+    new_width_nm[-1]  = orig_width_nm[-1] * 0.04
+
+    # 写回 properties
+    properties["left_bases"]  = left_bases
+    properties["right_bases"] = right_bases
+    properties["widths"]      = new_width_pts
+    properties["widths_nm"]   = new_width_nm
+
+    return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
 
 
 
@@ -255,19 +312,19 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf
             k += 1
 
         # 到这里，主峰 + 对称 Kelly 总数量 = target_count
-    else:
-        # 没有 widths 的情况下，保持原有按奇偶数的逻辑
-        if n % 2 == 1:
-            # 奇数：以中间峰为对称轴
-            mid = n // 2
-            axis = xs[mid]
-            pairs = [(mid - k, mid + k) for k in range(1, mid + 1)]
-        else:
-            # 偶数：以中间两峰的中点为轴
-            mid_left = n // 2 - 1
-            mid_right = n // 2
-            axis = 0.5 * (xs[mid_left] + xs[mid_right])
-            pairs = [(mid_left - k, mid_right + k) for k in range(0, mid_left + 1)]
+    # else:
+    #     # 没有 widths 的情况下，保持原有按奇偶数的逻辑
+    #     if n % 2 == 1:
+    #         # 奇数：以中间峰为对称轴
+    #         mid = n // 2
+    #         axis = xs[mid]
+    #         pairs = [(mid - k, mid + k) for k in range(1, mid + 1)]
+    #     else:
+    #         # 偶数：以中间两峰的中点为轴
+    #         mid_left = n // 2 - 1
+    #         mid_right = n // 2
+    #         axis = 0.5 * (xs[mid_left] + xs[mid_right])
+    #         pairs = [(mid_left - k, mid_right + k) for k in range(0, mid_left + 1)]
 
     # 3) 计算对称误差
     # 位置对称：理想情况是 xs[i] 与 xs[j] 关于 axis 等距 → |(xs[i]-axis) + (xs[j]-axis)| = 0

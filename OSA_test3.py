@@ -65,9 +65,9 @@ class OSA_MeasurementSystem:
         # ------------------------------
         # 设置波长区间和参数
         # ------------------------------
-        osa.write(":SENSE:WAVELENGTH:START 1535NM")       # 起始波长
-        osa.write(":SENSE:WAVELENGTH:STOP 1585NM")        # 结束波长
-        osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.05NM")   # 分辨率
+        osa.write(":SENSE:WAVELENGTH:START 1516NM")       # 起始波长
+        osa.write(":SENSE:WAVELENGTH:STOP 1636NM")        # 结束波长
+        osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.2NM")   # 分辨率
         osa.write(":SENSE:SENSITIVITY HIGH1")             # 灵敏度
 
         # ------------------------------
@@ -87,11 +87,20 @@ class OSA_MeasurementSystem:
         x_nm = [float(x) * 1e9 for x in xdata.strip().split(",")]  # m → nm
         y_dBm = [float(y) for y in ydata.strip().split(",")]
 
-        # ------------------------------
-        # 强度限幅：小于 -65 的都改为 -65
-        # ------------------------------
-        y_dBm = [max(y, -65.0) for y in y_dBm]
+        if y_dBm:
+            # 从第二个点开始，遇到小于 -150 的就用上一个值替换
+            for i in range(1, len(y_dBm)):
+                if y_dBm[i] < -150:
+                    y_dBm[i] = y_dBm[i - 1]
 
+            # 若第一个点小于 -150，则用后面第一个非异常值替代（若存在）
+            if y_dBm[0] < -150:
+                for j in range(1, len(y_dBm)):
+                    if y_dBm[j] >= -150:
+                        y_dBm[0] = y_dBm[j]
+                        break
+        # >>> 功率裁剪，小于 -55 dBm 的全部固定为 -55 <<<
+        y_dBm = [max(y, -55) for y in y_dBm]
         format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
 
         return y_dBm, x_nm
@@ -129,39 +138,8 @@ class OSA_MeasurementSystem:
             self.rm.close()
 
 
-#数据分析
-def Get_Peaks(y_dBm, x_nm):
-    """
-    从光谱图中分析出峰值
-    参数:
-        y_dBm：从光谱仪获取的强度数组
-        x_nm：从光谱仪获取的位置数组
-    """
 
-    # 对功率数据应用 Savitzky-Golay 滤波器
-    y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
-
-    # 查找峰值
-    peaks, properties = find_peaks(y_dBm, height=-70, distance=200, prominence=0.8, width=30)
-
-    # #画图
-    # plt.clf()
-    # plt.plot(x_nm, y_dBm, label="Signal")
-    # plt.plot(np.array(x_nm)[peaks], y_dBm[peaks], "rx", label="Peaks")  # 红叉表示峰
-    # plt.xlabel("Wavelength (nm)")
-    # plt.ylabel("Power (dBm)")
-    # plt.title("OSA Trace")
-    # plt.grid(True)
-    # plt.legend()
-    # plt.savefig("figure.png", dpi=300)
-    # plt.show(block=False)
-    # time.sleep(0.2)
-
-    return y_dBm[peaks], np.array(x_nm)[peaks]
-
-
-
-
+#单片机操作类
 class PCDM02DigitalController:
     """
     PCD-M02数字控制模式接口
@@ -194,50 +172,165 @@ class PCDM02DigitalController:
         self.ser.close()
 
 
-def fitness_peaks(meas_peaks, templ_peaks, tol=0.15, alpha=0.2, beta=1.5, gamma=1):
+
+
+#取峰及其属性
+def Get_Peaks(y_dBm, x_nm):
+
+    y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
+
+    peaks, properties = find_peaks(
+        y_dBm, height=-65, prominence=0.2, width=10
+    )
+
+    if len(peaks) == 0:
+        return y_dBm[peaks], np.array(x_nm)[peaks], peaks, properties, y_dBm
+
+    x_nm = np.asarray(x_nm)
+    y_dBm = np.asarray(y_dBm)
+    peaks = np.asarray(peaks, dtype=int)
+
+    # --- 先记录 SciPy 原始的 left/right bases 和宽度 ---
+    orig_left  = properties["left_bases"].copy()
+    orig_right = properties["right_bases"].copy()
+    orig_width_pts = properties["widths"].copy()
+    orig_width_nm  = x_nm[orig_right] - x_nm[orig_left]
+
+    # --- 先找所有“局部谷底” ---
+    valleys, _ = find_peaks(-y_dBm)
+
+    # 新的左右谷底（默认先用原始的）
+    left_bases  = orig_left.copy()
+    right_bases = orig_right.copy()
+
+    for i, p in enumerate(peaks):
+
+        # ===== 中间峰（非首非尾） → 使用最近谷底 =====
+        if 0 < i < len(peaks) - 1:
+
+            # 最近左谷
+            v_left = valleys[valleys < p]
+            if v_left.size > 0:
+                left_bases[i] = v_left[-1]
+
+            # 最近右谷
+            v_right = valleys[valleys > p]
+            if v_right.size > 0:
+                right_bases[i] = v_right[0]
+
+        # ===== 最左峰（i == 0） → 完全保持 SciPy 原始 =====
+        elif i == 0:
+            left_bases[i]  = orig_left[i]
+            right_bases[i] = orig_right[i]
+
+        # ===== 最右峰（i == 最后） → 完全保持 SciPy 原始 =====
+        elif i == len(peaks) - 1:
+            left_bases[i]  = orig_left[i]
+            right_bases[i] = orig_right[i]
+
+    # ---- 基于新的左右谷底更新宽度（仅中间峰） ----
+    new_width_pts = right_bases - left_bases
+    new_width_nm  = x_nm[right_bases] - x_nm[left_bases]
+
+    # 但最左峰、最右峰的宽度改回“原始 SciPy”
+    new_width_pts[0]  = orig_width_pts[0] * 2.5
+    new_width_nm[0]   = new_width_pts[0] * 0.04
+
+    new_width_pts[-1] = orig_width_pts[-1] * 2.5
+    new_width_nm[-1]  = orig_width_nm[-1] * 0.04
+
+    # 写回 properties
+    properties["left_bases"]  = left_bases
+    properties["right_bases"] = right_bases
+    properties["widths"]      = new_width_pts
+    properties["widths_nm"]   = new_width_nm
+
+    return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
+
+
+#适应度计算
+def fitness_symmetry_dimer(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
     """
-    最简单的峰匹配适应度（最小化越好）
-    - meas_peaks, templ_peaks: [(x, a)]，x为位置(同单位)，a为强度
-    - tol: 位置容差(与x同单位)，用于把位置误差无量纲化
-    - alpha/beta/gamma: 三项权重（位置/强度/峰数）
-    思路：两边按x排序，按索引逐一比；多出来的峰走“数量惩罚”。
+    用于识别“具有对称结构的束缚态双孤子分子”的适应度（越小越好）
+
+    - meas_peaks: [(x, a)]，x=波长/频率位置，a=幅度
+    - w_pos / w_amp: 位置对称项与强度对称项的权重
+    - 返回: 浮点分数（越小越好）
     """
-    if len(templ_peaks) == 0:
-        return 1e6
+    # 1) 至少要有 8 个峰，否则直接判为不符合
+    if meas_peaks is None or len(meas_peaks) < 8:
+        return huge
 
-    # 1) 排序
-    meas = sorted(meas_peaks, key=lambda t: t[0])
-    templ = sorted(templ_peaks, key=lambda t: t[0])
+    # 2) 取幅度最大的前 8 个峰
+    #    这里按 a 从大到小排序，再截前 8 个
+    peaks_by_amp = sorted(meas_peaks, key=lambda t: t[1], reverse=True)
+    top8 = peaks_by_amp[:8]
 
-    # 2) 强度归一化（避免量纲问题）
-    def norm_peaks(P):
-        xs = np.array([p[0] for p in P], dtype=float)
-        as_ = np.array([p[1] for p in P], dtype=float)
-        s = as_.sum()
-        as_ = as_ / s
-        return xs, as_
+    # 3) 按 x 从小到大排序（光谱横坐标）
+    meas_peaks_sorted = sorted(top8, key=lambda t: t[0])
+    xs = np.array([p[0] for p in meas_peaks_sorted], dtype=float)
+    amps = np.array([p[1] for p in meas_peaks_sorted], dtype=float)
 
-    print(meas_peaks)
-    xm, am = norm_peaks(meas)
-    xt, at = norm_peaks(templ)
-    print(f"at：{at}")
-    print(f"am：{am}")
+    # 幅度归一化（避免量纲、便于比较）
+    sum_amp = np.sum(amps)
+    if sum_amp == 0:
+        return huge
+    amps_n = amps / sum_amp
 
-    # 3) 对齐长度，逐一比较（按索引）
-    k = min(len(xm), len(xt))
-    if k == 0:
-        return 1e6
+    n = len(xs)  # 对当前算法应为 8（也支持其它偶数个峰的情况）
 
-    #pos_err = np.mean(((xm[:k] - xt[:k]) / tol) ** 2) # 位置均方误差（按容差归一）
-    amp_err = np.mean((am[:k] - at[:k]) ** 2)               # 强度均方误差
-    count_err = abs(len(xm) - len(xt)) / max(1, len(xt))       # 峰数相对误差
-    #print(f"pos_err:{pos_err}")
-    print(f"amp_err:{amp_err}")
-    print(f"count_err:{count_err}")
+    # 4) 定义对称轴：取中间两峰之间的“谷底”
+    #    这里无法直接得到谷底位置，用两峰的 x 坐标中点近似
+    mid_left = n // 2 - 1   # 对 n=8，为 3（第 4 个）
+    mid_right = n // 2      # 对 n=8，为 4（第 5 个）
+    axis = 0.5 * (xs[mid_left] + xs[mid_right])
 
-    # 4) 综合得分
-    F =beta * amp_err + gamma * count_err
-    return float(F)
+    # 5) 生成成对的对称峰索引
+    #    先中间一对 (mid_left, mid_right)，再向两侧扩展：
+    #    (mid_left-1, mid_right+1), (mid_left-2, mid_right+2), ...
+    pairs = []
+    i = mid_left
+    j = mid_right
+    while i >= 0 and j < n:
+        pairs.append((i, j))
+        i -= 1
+        j += 1
+
+    # 如果左右数量不对称，会有一侧提前越界，剩下的就不配对了
+    # 在 n=8 的情况下应得到 [(3,4), (2,5), (1,6), (0,7)]
+
+    # 6) 计算尺度 L（取半跨度）
+    L = np.max(np.abs(xs - axis))
+    if L == 0:
+        return huge
+
+    pos_errs = []
+    amp_errs = []
+
+    for i, j in pairs:
+        if i < 0 or j >= n:
+            return huge  # 理论上不该发生，只做保护
+
+        di = xs[i] - axis
+        dj = xs[j] - axis
+
+        # 位置对称：理想情况下 di + dj = 0
+        pos_errs.append(((di + dj) / L)**2)
+        print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
+
+        # 强度对称：理想情况下 amps_n[i] == amps_n[j]
+        amp_errs.append((amps_n[i] - amps_n[j])**2)
+
+    # 归一化：避免不同配对数量下的偏置（沿用你的写法）
+    pos_err = float(np.mean(pos_errs)) / 4 if pos_errs else 0.0
+    amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
+    print(f"位置误差：{pos_err}，强度误差：{amp_err}")
+
+    # 7) 汇总适应度
+    fitness = w_pos * pos_err + w_amp * amp_err
+    return fitness
+
+
 
 
 def voltage_pso_optimization(
@@ -265,32 +358,7 @@ def voltage_pso_optimization(
         personal_best_scores = np.full(num_particles, np.inf)  # 个体最优分数
         global_best_position = np.nan  # 全局最优位置
         global_best_score = np.inf  # 全局最优分数
-
-        #获取标准谱
-        x_nm_templ = []
-        y_dBm_templ = []
-        with open("osa_formatted_output.txt", "r") as f:    #打开标准谱文件
-            for line in f:
-                # 忽略空行
-                if not line.strip():
-                    continue
-                # 拆分格式：1500.00 nm : -45.23 dBm
-                parts = line.strip().split()
-                try:
-                    wavelength = float(parts[0])  # 1500.00
-                    power = float(parts[3])  # -45.23
-
-                    if power < -61:
-                        power = -61
-
-                    x_nm_templ.append(wavelength)
-                    y_dBm_templ.append(power)
-                except (ValueError, IndexError):
-                    print("跳过无法解析的行:", line)
-
-        y_dBm_templpeaks, x_nm_templpeaks = Get_Peaks(y_dBm_templ, x_nm_templ)
-        templ_peaks  = list(zip(x_nm_templpeaks, y_dBm_templpeaks))
-
+        k = 0   #优秀个体计数
 
         # max_iterations 次的迭代循环
         for iteration in range(max_iterations):
@@ -305,13 +373,13 @@ def voltage_pso_optimization(
 
 
                 y_dBm, x_nm = meas.read_OSA()
-                y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
+                y_dBm_peaks, x_nm_peaks, peaks, properties, y_lvbo = Get_Peaks(y_dBm, x_nm)
                 meas_peaks  = list(zip(x_nm_peaks, y_dBm_peaks))
 
+                widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
-
-                fitness = fitness_peaks(meas_peaks, templ_peaks)
-
+                fitness = fitness_symmetry(meas_peaks, 5, widths=widths)
+                print(fitness)
                 # 更新个体最优
                 if fitness is not None and fitness < personal_best_scores[i]:
                     personal_best_scores[i] = fitness
@@ -322,10 +390,18 @@ def voltage_pso_optimization(
                     global_best_score = personal_best_scores[i]
                     global_best_position = personal_best_positions[i]
 
-                print(f"粒子 {i+1} 电压 {v} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
+                    # ★★★ 新增：每当找到更小的全局适应度时，保存当前光谱数据到新文件
+                    k = k+1
+                    filename = f"osa_best_iter{iteration + 1}_particle{i + 1}_best{k}.txt"
+                    format_results(y_dBm, x_nm, precision=2, save_file=filename)
 
-                if fitness <= 0.0005:
+                print(f"粒子 {i+1} 电压 {v} -> 峰的个数：{len(y_dBm_peaks)} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
+
+
+                # ❗❗❗❗ 退出条件
+                if fitness <= 0.001:
                     return
+
 
             # 粒子群速度与位置更新
             # w * velocities[i] 是惯性项，延续上一步的速度，w越大表示探索性越强，越小表示探索越保守
@@ -369,10 +445,16 @@ def voltage_pso_optimization(
 
 
 if __name__ == "__main__":
-    osa = OSA_MeasurementSystem(ip="192.168.1.3")
-    y_dBm, x_nm = osa.read_OSA_exist()
-    format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
-    # voltage_pso_optimization()
+    # meas = OSA_MeasurementSystem()
+    # y_dBm, x_nm = meas.read_OSA()
+    # meas.close()
+    # y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
+    # meas_peaks = list(zip(x_nm_peaks, y_dBm_peaks))
+    #
+    # fitness = fitness_symmetry(meas_peaks, 5)
+    # print(fitness)
+    # format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
+    voltage_pso_optimization()
 
 # # 打印部分数据
 # #print(f"共 {npts} 点")

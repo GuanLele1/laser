@@ -11,7 +11,7 @@ from scipy.signal import savgol_filter
 x_nm = []
 y_dBm = []
 
-with open("osa_best_iter59_particle7_best5.txt", "r") as f:
+with open("soliton_molecules_300mw.txt", "r") as f:
     for line in f:
         # 忽略空行
         if not line.strip():
@@ -70,7 +70,7 @@ for i, peak in enumerate(peaks):
     right_x = x_nm[right_base_idx]
 
     width_pts = properties["widths"][i]
-    width_nm = x_nm[int(properties["right_ips"][i])] - x_nm[int(properties["left_ips"][i])]
+    width_nm = properties["widths_nm"][i]
 
     print(f"峰 {i+1}:")
     print(f"  峰位置: {peak_x:.2f} nm, 强度: {peak_y:.2f} dBm")
