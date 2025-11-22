@@ -249,7 +249,7 @@ def Get_Peaks(y_dBm, x_nm):
 
 
 #适应度计算
-def fitness_symmetry_dimer(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
+def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
     """
     用于识别“具有对称结构的束缚态双孤子分子”的适应度（越小越好）
 
@@ -410,10 +410,55 @@ def voltage_pso_optimization(
             # r的作用是给“拉力”加随机性，避免所有粒子动作完全一致，保持群体的多样性。
             for i in range(num_particles):
                 if np.isinf(personal_best_scores[i]):
-                    print(f"[重置] 第 {i} 个粒子有个体最佳为 inf，对其重置。")
-                    particles[i] = np.random.uniform(v_min, v_max, 4)
+                    if np.any(np.isnan(global_best_position)):
+                        # 一开始还没全局最优，用全局随机
+                        particles[i] = np.random.uniform(v_min, v_max, 4)
+                    else:
+                        # 已经有不错的解了：在全局最优附近随机微调
+                        local_span = 5.0  # 比如 ±5V 的小立方体
+                        particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
+                        particles[i] = np.clip(particles[i], v_min, v_max)
+
                     personal_best_positions[i] = particles[i]
                     continue
+
+                    # ===== 根据适应度调节最大步长：适应度越小，步长越小 =====
+                    score = personal_best_scores[i]
+
+                    # 设定一个“好到什么程度”的参考尺度，比如 0.05
+                    # 小于它就认为已经很不错了，进入很小步长微调区间
+                    score_ref = 0.1
+
+                    # 把 score 截断到 [0, score_ref]
+                    score_clipped = min(max(score, 0.0), score_ref)
+
+                    # 映射到一个 [step_min_factor, 1] 的因子：
+                    #   score_clipped = score_ref 时 → factor = 1 （很差，步长最大）
+                    #   score_clipped → 0 时         → factor → step_min_factor（很好，步长最小）
+                    step_min_factor = 0.1  # 最小步长比例（防止完全不动）
+                    factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
+
+                    # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
+                    v_step_max_base = 4.0
+                    v_step_max = v_step_max_base * factor
+                    # ===================================================
+
+                    w = 0.5
+                    c1 = 1.5
+                    c2 = 1.5
+                    r1 = np.random.rand(4)
+                    r2 = np.random.rand(4)
+
+                    velocities[i] = (w * velocities[i]
+                                     + c1 * r1 * (personal_best_positions[i] - particles[i])
+                                     + c2 * r2 * (global_best_position - particles[i]))
+
+                    # 用适应度决定的最大步长限制速度
+                    velocities[i] = np.clip(velocities[i], -v_step_max, v_step_max)
+
+                    particles[i] += velocities[i]
+                    particles[i] = np.clip(particles[i], v_min, v_max)
+
                 w = 0.5
                 c1 = 1.5
                 c2 = 1.5
