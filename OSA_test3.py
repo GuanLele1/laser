@@ -378,7 +378,7 @@ def voltage_pso_optimization(
 
                 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
-                fitness = fitness_symmetry(meas_peaks, 5, widths=widths)
+                fitness = fitness_symmetry(meas_peaks)
                 print(fitness)
                 # 更新个体最优
                 if fitness is not None and fitness < personal_best_scores[i]:
@@ -422,55 +422,43 @@ def voltage_pso_optimization(
                     personal_best_positions[i] = particles[i]
                     continue
 
-                    # ===== 根据适应度调节最大步长：适应度越小，步长越小 =====
-                    score = personal_best_scores[i]
+                # ===== 根据适应度调节最大步长：适应度越小，步长越小 =====
+                score = personal_best_scores[i]
 
-                    # 设定一个“好到什么程度”的参考尺度，比如 0.05
-                    # 小于它就认为已经很不错了，进入很小步长微调区间
-                    score_ref = 0.1
+                # 设定一个“好到什么程度”的参考尺度，比如 0.05
+                # 小于它就认为已经很不错了，进入很小步长微调区间
+                score_ref = 0.1
 
-                    # 把 score 截断到 [0, score_ref]
-                    score_clipped = min(max(score, 0.0), score_ref)
+                # 把 score 截断到 [0, score_ref]
+                score_clipped = min(max(score, 0.0), score_ref)
 
-                    # 映射到一个 [step_min_factor, 1] 的因子：
-                    #   score_clipped = score_ref 时 → factor = 1 （很差，步长最大）
-                    #   score_clipped → 0 时         → factor → step_min_factor（很好，步长最小）
-                    step_min_factor = 0.1  # 最小步长比例（防止完全不动）
-                    factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
+                # 映射到一个 [step_min_factor, 1] 的因子：
+                #   score_clipped = score_ref 时 → factor = 1 （很差，步长最大）
+                #   score_clipped → 0 时         → factor → step_min_factor（很好，步长最小）
+                step_min_factor = 0.1  # 最小步长比例（防止完全不动）
+                factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
 
-                    # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
-                    v_step_max_base = 4.0
-                    v_step_max = v_step_max_base * factor
-                    # ===================================================
-
-                    w = 0.5
-                    c1 = 1.5
-                    c2 = 1.5
-                    r1 = np.random.rand(4)
-                    r2 = np.random.rand(4)
-
-                    velocities[i] = (w * velocities[i]
-                                     + c1 * r1 * (personal_best_positions[i] - particles[i])
-                                     + c2 * r2 * (global_best_position - particles[i]))
-
-                    # 用适应度决定的最大步长限制速度
-                    velocities[i] = np.clip(velocities[i], -v_step_max, v_step_max)
-
-                    particles[i] += velocities[i]
-                    particles[i] = np.clip(particles[i], v_min, v_max)
+                # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
+                v_step_max_base = 4.0
+                v_step_max = v_step_max_base * factor
+                # ===================================================
 
                 w = 0.5
                 c1 = 1.5
                 c2 = 1.5
                 r1 = np.random.rand(4)
                 r2 = np.random.rand(4)
-                # 更新速度公式，适用于四个通道的电压和速度
+
                 velocities[i] = (w * velocities[i]
                                  + c1 * r1 * (personal_best_positions[i] - particles[i])
                                  + c2 * r2 * (global_best_position - particles[i]))
+
+                # 用适应度决定的最大步长限制速度
+                velocities[i] = np.clip(velocities[i], -v_step_max, v_step_max)
+
                 # 更新粒子位置
                 particles[i] += velocities[i]
-                particles[i] = np.clip(particles[i], v_min, v_max)  # 限定电压范围
+                particles[i] = np.clip(particles[i], v_min, v_max)
 
             print(f"当前最优电压: {global_best_position} V  最小分数: {global_best_score:.2f} Hz")
 
