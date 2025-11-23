@@ -99,8 +99,7 @@ class OSA_MeasurementSystem:
                     if y_dBm[j] >= -150:
                         y_dBm[0] = y_dBm[j]
                         break
-        # >>> 功率裁剪，小于 -55 dBm 的全部固定为 -55 <<<
-        y_dBm = [max(y, -55) for y in y_dBm]
+
         format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
 
         return y_dBm, x_nm
@@ -415,7 +414,7 @@ def voltage_pso_optimization(
                         particles[i] = np.random.uniform(v_min, v_max, 4)
                     else:
                         # 已经有不错的解了：在全局最优附近随机微调
-                        local_span = 5.0  # 比如 ±5V 的小立方体
+                        local_span = 10  # 比如 ±5V 的小立方体
                         particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
                         particles[i] = np.clip(particles[i], v_min, v_max)
 

@@ -1,5 +1,5 @@
 import numpy as np
-import  OSA_test2
+import  OSA_test3
 from fontTools.unicodedata import block
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ from scipy.signal import savgol_filter
 x_nm = []
 y_dBm = []
 
-with open("soliton_molecules_300mw.txt", "r") as f:
+with open("osa_best_iter23_particle1_best6.txt", "r") as f:
     for line in f:
         # 忽略空行
         if not line.strip():
@@ -50,11 +50,11 @@ if y_dBm:
 # y_dBm = np.array(y_dBm)
 
 
-y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test2.Get_Peaks(y_dBm, x_nm)
+y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test3.Get_Peaks(y_dBm, x_nm)
 meas_peaks  = list(zip(x_nm_peak, y_dBm_peak))
 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
-fitness = OSA_test2.fitness_symmetry(meas_peaks, 5, widths=widths)
+fitness = OSA_test3.fitness_symmetry(meas_peaks)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)
