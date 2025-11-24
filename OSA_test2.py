@@ -311,50 +311,38 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf
             current_count += 2
             k += 1
 
-        # 到这里，主峰 + 对称 Kelly 总数量 = target_count
-    # else:
-    #     # 没有 widths 的情况下，保持原有按奇偶数的逻辑
-    #     if n % 2 == 1:
-    #         # 奇数：以中间峰为对称轴
-    #         mid = n // 2
-    #         axis = xs[mid]
-    #         pairs = [(mid - k, mid + k) for k in range(1, mid + 1)]
-    #     else:
-    #         # 偶数：以中间两峰的中点为轴
-    #         mid_left = n // 2 - 1
-    #         mid_right = n // 2
-    #         axis = 0.5 * (xs[mid_left] + xs[mid_right])
-    #         pairs = [(mid_left - k, mid_right + k) for k in range(0, mid_left + 1)]
+        # 3) 计算对称误差
+        # 位置对称：理想情况是 xs[i] 与 xs[j] 关于 axis 等距 → |(xs[i]-axis) + (xs[j]-axis)| = 0
+        # 强度对称：理想情况是 amps_n[i] == amps_n[j]
 
-    # 3) 计算对称误差
-    # 位置对称：理想情况是 xs[i] 与 xs[j] 关于 axis 等距 → |(xs[i]-axis) + (xs[j]-axis)| = 0
-    # 强度对称：理想情况是 amps_n[i] == amps_n[j]
+        # 计算尺度 L（取半跨度）
+        L = np.max(np.abs(xs - axis))
+        if L == 0:
+            return huge
 
-    # 计算尺度 L（取半跨度）
-    L = np.max(np.abs(xs - axis))
-    if L == 0:
+        pos_errs = []
+        amp_errs = []
+        for i, j in pairs:
+            if i < 0 or j >= n:
+                return huge  # 理论上不该发生
+            di = xs[i] - axis
+            dj = xs[j] - axis
+
+            pos_errs.append(((di + dj) / L)**2)                # 等距对称误差（平方）
+            print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
+            amp_errs.append((amps_n[i] - amps_n[j])**2)        # 强度对称误差（平方）
+
+        # 归一：避免不同数量配对下的偏置
+        pos_err = float(np.mean(pos_errs)) / 4 if pos_errs else 0.0
+        amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
+        print(f"位置误差：{pos_err}，强度误差：{amp_err}")
+
+        # 4) 汇总
+        fitness = w_pos * pos_err + w_amp * amp_err
+        return fitness
+
+    else:
         return huge
-
-    pos_errs = []
-    amp_errs = []
-    for i, j in pairs:
-        if i < 0 or j >= n:
-            return huge  # 理论上不该发生
-        di = xs[i] - axis
-        dj = xs[j] - axis
-
-        pos_errs.append(((di + dj) / L)**2)                # 等距对称误差（平方）
-        print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
-        amp_errs.append((amps_n[i] - amps_n[j])**2)        # 强度对称误差（平方）
-
-    # 归一：避免不同数量配对下的偏置
-    pos_err = float(np.mean(pos_errs)) / 4 if pos_errs else 0.0
-    amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
-    print(f"位置误差：{pos_err}，强度误差：{amp_err}")
-
-    # 4) 汇总
-    fitness = w_pos * pos_err + w_amp * amp_err
-    return fitness
 
 
 
