@@ -11,7 +11,7 @@ from scipy.signal import savgol_filter
 x_nm = []
 y_dBm = []
 
-with open("data/molecules/osa_best_iter4_particle3_best1.txt", "r") as f:
+with open("single_soliton.txt", "r") as f:
     for line in f:
         # 忽略空行
         if not line.strip():
@@ -54,7 +54,7 @@ y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test2.Get_Peaks(y_dBm, x_n
 meas_peaks  = list(zip(x_nm_peak, y_dBm_peak))
 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
-fitness = OSA_test2.fitness_symmetry(meas_peaks, 5)
+fitness = OSA_test2.fitness_symmetry(meas_peaks, 5, widths = widths)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)

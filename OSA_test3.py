@@ -7,7 +7,7 @@ import serial
 import time
 import sys
 import os
-
+from matplotlib.animation import FuncAnimation, PillowWriter
 
 
 def format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output.txt"):
@@ -170,6 +170,56 @@ class PCDM02DigitalController:
         """关闭串口连接"""
         self.ser.close()
 
+
+
+#动图制作
+def make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2):
+    """
+    all_spectra: [(x_nm_array, y_dBm_array), ...]
+    """
+    if not all_spectra:
+        print("没有记录到任何光谱，无法生成动画。")
+        return
+
+    # 先确定全局的 x、y 范围，避免每帧缩放乱跳
+    all_x = np.concatenate([spec[0] for spec in all_spectra])
+    all_y = np.concatenate([spec[1] for spec in all_spectra])
+
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+
+    fig, ax = plt.subplots()
+    line, = ax.plot([], [], lw=1)
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min - 2, y_max + 2)
+    ax.set_xlabel("Wavelength (nm)")
+    ax.set_ylabel("Power (dBm)")
+    ax.set_title("OSA Spectrum Evolution (PSO Iterations)")
+    ax.grid(True)
+
+    def init():
+        line.set_data([], [])
+        return line,
+
+    def update(frame):
+        x, y = all_spectra[frame]
+        line.set_data(x, y)
+        ax.set_title(f"OSA Spectrum - Frame {frame+1}/{len(all_spectra)}")
+        return line,
+
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames=len(all_spectra),
+        init_func=init,
+        blit=True
+    )
+
+    # 使用 Pillow 保存为 GIF（需要安装 pillow: pip install pillow）
+    ani.save(filename, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"动画已保存为 {filename}")
 
 
 
@@ -358,6 +408,7 @@ def voltage_pso_optimization(
         global_best_position = np.nan  # 全局最优位置
         global_best_score = np.inf  # 全局最优分数
         k = 0   #优秀个体计数
+        all_spectra = []  # 用来记录每次迭代的光谱 (x_nm, y_dBm) 做动图用
 
         # max_iterations 次的迭代循环
         for iteration in range(max_iterations):
@@ -399,6 +450,7 @@ def voltage_pso_optimization(
 
                 # ❗❗❗❗ 退出条件
                 if fitness <= 0.001:
+                    make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2)  # 动图制作
                     return
 
 

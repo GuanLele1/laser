@@ -7,7 +7,7 @@ import serial
 import time
 import sys
 import os
-
+from matplotlib.animation import FuncAnimation, PillowWriter
 
 
 def format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output.txt"):
@@ -172,6 +172,55 @@ class PCDM02DigitalController:
         self.ser.close()
 
 
+#动图制作
+def make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2):
+    """
+    all_spectra: [(x_nm_array, y_dBm_array), ...]
+    """
+    if not all_spectra:
+        print("没有记录到任何光谱，无法生成动画。")
+        return
+
+    # 先确定全局的 x、y 范围，避免每帧缩放乱跳
+    all_x = np.concatenate([spec[0] for spec in all_spectra])
+    all_y = np.concatenate([spec[1] for spec in all_spectra])
+
+    x_min, x_max = np.min(all_x), np.max(all_x)
+    y_min, y_max = np.min(all_y), np.max(all_y)
+
+    fig, ax = plt.subplots()
+    line, = ax.plot([], [], lw=1)
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min - 2, y_max + 2)
+    ax.set_xlabel("Wavelength (nm)")
+    ax.set_ylabel("Power (dBm)")
+    ax.set_title("OSA Spectrum Evolution (PSO Iterations)")
+    ax.grid(True)
+
+    def init():
+        line.set_data([], [])
+        return line,
+
+    def update(frame):
+        x, y = all_spectra[frame]
+        line.set_data(x, y)
+        ax.set_title(f"OSA Spectrum - Frame {frame+1}/{len(all_spectra)}")
+        return line,
+
+    ani = FuncAnimation(
+        fig,
+        update,
+        frames=len(all_spectra),
+        init_func=init,
+        blit=True
+    )
+
+    # 使用 Pillow 保存为 GIF（需要安装 pillow: pip install pillow）
+    ani.save(filename, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"动画已保存为 {filename}")
+
 
 
 #取峰及其属性
@@ -293,7 +342,7 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf
         # 用峰宽最大的作为主峰
         main_idx = int(np.argmax(widths_sorted))
         axis = xs[main_idx]
-
+        print(1)
         # 从主峰开始，向两边取对称的 Kelly 边带，直到总数达到 target_count
         pairs = []
         current_count = 1           # 当前总峰数（已含主峰）
@@ -372,6 +421,7 @@ def voltage_pso_optimization(
         global_best_position = np.nan  # 全局最优位置
         global_best_score = np.inf  # 全局最优分数
         k = 0   #优秀个体计数
+        all_spectra = []  # 用来记录每次迭代的光谱 (x_nm, y_dBm) 做动图用
 
         # max_iterations 次的迭代循环
         for iteration in range(max_iterations):
@@ -388,6 +438,8 @@ def voltage_pso_optimization(
                 y_dBm, x_nm = meas.read_OSA()
                 y_dBm_peaks, x_nm_peaks, peaks, properties, y_lvbo = Get_Peaks(y_dBm, x_nm)
                 meas_peaks  = list(zip(x_nm_peaks, y_dBm_peaks))
+
+                all_spectra.append((np.array(x_nm), np.array(y_lvbo))) #把光谱加进动图素材
 
                 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
@@ -413,6 +465,7 @@ def voltage_pso_optimization(
 
                 # ❗❗❗❗ 退出条件
                 if fitness <= 0.001:
+                    make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2)  #动图制作
                     return
 
 
@@ -423,10 +476,39 @@ def voltage_pso_optimization(
             # r的作用是给“拉力”加随机性，避免所有粒子动作完全一致，保持群体的多样性。
             for i in range(num_particles):
                 if np.isinf(personal_best_scores[i]):
-                    print(f"[重置] 第 {i} 个粒子有个体最佳为 inf，对其重置。")
-                    particles[i] = np.random.uniform(v_min, v_max, 4)
-                    personal_best_positions[i] = particles[i]
-                    continue
+                    if np.any(np.isnan(global_best_position)):
+                        # 一开始还没全局最优，用全局随机
+                        particles[i] = np.random.uniform(v_min, v_max, 4)
+                    else:
+                        # 已经有不错的解了：在全局最优附近随机微调
+                        local_span = 10  # 比如 ±10V 的小立方体
+                        particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
+                        particles[i] = np.clip(particles[i], v_min, v_max)
+
+                personal_best_positions[i] = particles[i]
+                continue
+
+                # ===== 根据适应度调节最大步长：适应度越小，步长越小 =====
+                score = personal_best_scores[i]
+
+                # 设定一个“好到什么程度”的参考尺度，比如 0.05
+                # 小于它就认为已经很不错了，进入很小步长微调区间
+                score_ref = 0.1
+
+                # 把 score 截断到 [0, score_ref]
+                score_clipped = min(max(score, 0.0), score_ref)
+
+                # 映射到一个 [step_min_factor, 1] 的因子：
+                #   score_clipped = score_ref 时 → factor = 1 （很差，步长最大）
+                #   score_clipped → 0 时         → factor → step_min_factor（很好，步长最小）
+                step_min_factor = 0.1  # 最小步长比例（防止完全不动）
+                factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
+
+                # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
+                v_step_max_base = 4.0
+                v_step_max = v_step_max_base * factor
+                # ===================================================
+
                 w = 0.5
                 c1 = 1.5
                 c2 = 1.5

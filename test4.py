@@ -52,7 +52,6 @@ if y_dBm:
 
 y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test3.Get_Peaks(y_dBm, x_nm)
 meas_peaks  = list(zip(x_nm_peak, y_dBm_peak))
-widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
 fitness = OSA_test3.fitness_symmetry(meas_peaks)
 
