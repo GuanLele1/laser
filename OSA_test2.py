@@ -66,7 +66,7 @@ class OSA_MeasurementSystem:
         # 设置波长区间和参数
         # ------------------------------
         osa.write(":SENSE:WAVELENGTH:START 1516NM")       # 起始波长
-        osa.write(":SENSE:WAVELENGTH:STOP 1636NM")        # 结束波长
+        osa.write(":SENSE:WAVELENGTH:STOP 1616NM")        # 结束波长
         osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.2NM")   # 分辨率
         osa.write(":SENSE:SENSITIVITY HIGH1")             # 灵敏度
 
@@ -99,8 +99,7 @@ class OSA_MeasurementSystem:
                     if y_dBm[j] >= -150:
                         y_dBm[0] = y_dBm[j]
                         break
-        # >>> 功率裁剪，小于 -55 dBm 的全部固定为 -55 <<<
-        y_dBm = [max(y, -55) for y in y_dBm]
+
         format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
 
         return y_dBm, x_nm
@@ -229,7 +228,7 @@ def Get_Peaks(y_dBm, x_nm):
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
     peaks, properties = find_peaks(
-        y_dBm, height=-65, prominence=0.2, width=10
+        y_dBm, height=-68, prominence=0.2, width=10
     )
 
     if len(peaks) == 0:
@@ -254,18 +253,24 @@ def Get_Peaks(y_dBm, x_nm):
 
     for i, p in enumerate(peaks):
 
-        # ===== 中间峰（非首非尾） → 使用最近谷底 =====
+        # ===== 中间峰（非首非尾） → 用「相邻两峰之间最深的谷」 =====
         if 0 < i < len(peaks) - 1:
+            p_left  = peaks[i - 1]
+            p_right = peaks[i + 1]
 
-            # 最近左谷
-            v_left = valleys[valleys < p]
+            # 左侧谷：在 (p_left, p) 之间找谷，然后选 y 最小的那个
+            mask_left = (valleys > p_left) & (valleys < p)
+            v_left = valleys[mask_left]
             if v_left.size > 0:
-                left_bases[i] = v_left[-1]
+                left_bases[i] = v_left[np.argmin(y_dBm[v_left])]
+            # 如果这一段没有谷，就保持原始 orig_left[i]（不动）
 
-            # 最近右谷
-            v_right = valleys[valleys > p]
+            # 右侧谷：在 (p, p_right) 之间找谷，然后选 y 最小的那个
+            mask_right = (valleys > p) & (valleys < p_right)
+            v_right = valleys[mask_right]
             if v_right.size > 0:
-                right_bases[i] = v_right[0]
+                right_bases[i] = v_right[np.argmin(y_dBm[v_right])]
+            # 同样，如果没有谷就保持 orig_right[i]
 
         # ===== 最左峰（i == 0） → 完全保持 SciPy 原始 =====
         elif i == 0:
@@ -277,24 +282,24 @@ def Get_Peaks(y_dBm, x_nm):
             left_bases[i]  = orig_left[i]
             right_bases[i] = orig_right[i]
 
-    # ---- 基于新的左右谷底更新宽度（仅中间峰） ----
+    # ---- 基于新的左右谷底更新宽度 ----
     new_width_pts = right_bases - left_bases
     new_width_nm  = x_nm[right_bases] - x_nm[left_bases]
 
-    # 但最左峰、最右峰的宽度改回“原始 SciPy”
+    # 后面这几行你原来怎么写就先保持不动：
     new_width_pts[0]  = orig_width_pts[0] * 2.5
     new_width_nm[0]   = new_width_pts[0] * 0.04
 
     new_width_pts[-1] = orig_width_pts[-1] * 2.5
     new_width_nm[-1]  = orig_width_nm[-1] * 0.04
 
-    # 写回 properties
     properties["left_bases"]  = left_bases
     properties["right_bases"] = right_bases
     properties["widths"]      = new_width_pts
     properties["widths_nm"]   = new_width_nm
 
     return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
+
 
 
 
@@ -311,7 +316,7 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf
         return huge
 
     # 注意这里改成 "< target_count"：峰数量不够才罚，大于 target_count 也可以，从中挑
-    if meas_peaks is None or len(meas_peaks) < target_count:
+    if meas_peaks is None or len(meas_peaks) < target_count or len(meas_peaks) >= 20:
         return huge
 
     # 2) 对称性评估：先按 x 从小到大
@@ -337,7 +342,7 @@ def fitness_symmetry(meas_peaks, target_count, w_pos=100, w_amp=100, huge=np.inf
     # ---- 2.2 计算对称轴 & 根据 target_count 选取主峰 + 对称 Kelly ----
     if widths_sorted is not None:
         # >>> 最大宽度门槛 <<<
-        if np.max(widths_sorted) < 250:
+        if np.max(widths_sorted) < 200:
             return huge
         # 用峰宽最大的作为主峰
         main_idx = int(np.argmax(widths_sorted))
@@ -464,8 +469,8 @@ def voltage_pso_optimization(
 
 
                 # ❗❗❗❗ 退出条件
-                if fitness <= 0.001:
-                    make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2)  #动图制作
+                if fitness <= 0.01:
+                    make_osa_animation(all_spectra, filename="osa_pso.gif", fps=1)  #动图制作
                     return
 
 
@@ -481,7 +486,7 @@ def voltage_pso_optimization(
                         particles[i] = np.random.uniform(v_min, v_max, 4)
                     else:
                         # 已经有不错的解了：在全局最优附近随机微调
-                        local_span = 10  # 比如 ±10V 的小立方体
+                        local_span = 8  # 比如 ±10V 的小立方体
                         particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
                         particles[i] = np.clip(particles[i], v_min, v_max)
 
