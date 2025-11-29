@@ -229,7 +229,7 @@ def Get_Peaks(y_dBm, x_nm):
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
     peaks, properties = find_peaks(
-        y_dBm, height=-63, prominence=0.2, width=10
+        y_dBm, height=-63, prominence=0.2, width=8
     )
 
     if len(peaks) == 0:
@@ -303,46 +303,95 @@ def Get_Peaks(y_dBm, x_nm):
     return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
 
 
-#适应度计算
-def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
+
+
+def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
+                     huge=np.inf,
+                     widths=None):
+
     """
     用于识别“具有对称结构的束缚态双孤子分子”的适应度（越小越好）
-
-    - meas_peaks: [(x, a)]，x=波长/频率位置，a=幅度
-    - w_pos / w_amp: 位置对称项与强度对称项的权重
-    - 返回: 浮点分数（越小越好）
     """
-    # 1) 至少要有 8 个峰，否则直接判为不符合
+
+    # --- 新增逻辑：处理 3 峰过渡态 -------------------------
+    # 假定 meas_peaks = [(x, amp, width), ...]
+    if meas_peaks is not None and len(meas_peaks) == 3:
+        if widths is not None and len(widths) == 3:
+            # 按 x 排序，并同步排序 widths
+            xs = np.array([p[0] for p in meas_peaks], dtype=float)
+            amps = np.array([p[1] for p in meas_peaks], dtype=float)
+            widths_arr = np.array(widths, dtype=float)
+
+            order = np.argsort(xs)
+            xs_sorted = xs[order]
+            amps_sorted = amps[order]
+            widths_sorted = widths_arr[order]
+
+            # 中间峰作为对称轴
+            axis = xs_sorted[1]
+            mid_width = widths_sorted[1]
+
+            # 峰宽阈值（可根据实验调）
+            mid_width_threshold = 200
+            # 对称误差阈值（可根据实验调）
+            transition_err_threshold = 0.02
+            # 过渡态适应度值
+            transition_fitness_value = 0.5
+
+            if mid_width > mid_width_threshold:
+                # 按你后面主逻辑的思路：
+                # 位置：以 axis 为轴，要求 di + dj ≈ 0
+                di = xs_sorted[0] - axis
+                dj = xs_sorted[2] - axis
+                L = max(abs(di), abs(dj))
+                if L == 0:
+                    pos_err = huge
+                else:
+                    # 与后面一样：((di + dj)/L)^2 再除以 4
+                    pos_err = ((di + dj) / L) ** 2 / 4.0
+
+                # 幅度归一化后比较左右两峰强度
+                sum_amp = np.sum(amps_sorted)
+                if sum_amp == 0:
+                    amp_err = huge
+                else:
+                    amps_n = amps_sorted / sum_amp
+                    amp_err = (amps_n[0] - amps_n[2]) ** 2
+
+                # 定义一个综合误差（不加权），作为判断是否“足够对称”
+                symmetry_err = pos_err + amp_err
+                print(symmetry_err)
+                if symmetry_err < transition_err_threshold:
+                    # 认为这是你想标记的“过渡态束缚双孤子”，
+                    # 直接给一个固定的小适应度值，方便 PSO 识别
+                    return transition_fitness_value
+
+        # 有 3 个峰但不满足过渡态条件 → 按原规则，这种情况属于“不合格”
+        return huge
+    # -----------------------------------------------------
+
+    # ------------------- 原有逻辑开始 ---------------------
     if meas_peaks is None or len(meas_peaks) < 8 or len(meas_peaks) >= 10:
         return huge
 
-    # 2) 取幅度最大的前 8 个峰
-    #    这里按 a 从大到小排序，再截前 8 个
     peaks_by_amp = sorted(meas_peaks, key=lambda t: t[1], reverse=True)
     top8 = peaks_by_amp[:8]
 
-    # 3) 按 x 从小到大排序（光谱横坐标）
     meas_peaks_sorted = sorted(top8, key=lambda t: t[0])
     xs = np.array([p[0] for p in meas_peaks_sorted], dtype=float)
     amps = np.array([p[1] for p in meas_peaks_sorted], dtype=float)
 
-    # 幅度归一化（避免量纲、便于比较）
     sum_amp = np.sum(amps)
     if sum_amp == 0:
         return huge
     amps_n = amps / sum_amp
 
-    n = len(xs)  # 对当前算法应为 8（也支持其它偶数个峰的情况）
+    n = len(xs)
 
-    # 4) 定义对称轴：取中间两峰之间的“谷底”
-    #    这里无法直接得到谷底位置，用两峰的 x 坐标中点近似
-    mid_left = n // 2 - 1   # 对 n=8，为 3（第 4 个）
-    mid_right = n // 2      # 对 n=8，为 4（第 5 个）
+    mid_left = n // 2 - 1
+    mid_right = n // 2
     axis = 0.5 * (xs[mid_left] + xs[mid_right])
 
-    # 5) 生成成对的对称峰索引
-    #    先中间一对 (mid_left, mid_right)，再向两侧扩展：
-    #    (mid_left-1, mid_right+1), (mid_left-2, mid_right+2), ...
     pairs = []
     i = mid_left
     j = mid_right
@@ -351,10 +400,6 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
         i -= 1
         j += 1
 
-    # 如果左右数量不对称，会有一侧提前越界，剩下的就不配对了
-    # 在 n=8 的情况下应得到 [(3,4), (2,5), (1,6), (0,7)]
-
-    # 6) 计算尺度 L（取半跨度）
     L = np.max(np.abs(xs - axis))
     if L == 0:
         return huge
@@ -363,27 +408,18 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100, huge=np.inf):
     amp_errs = []
 
     for i, j in pairs:
-        if i < 0 or j >= n:
-            return huge  # 理论上不该发生，只做保护
-
         di = xs[i] - axis
         dj = xs[j] - axis
 
-        # 位置对称：理想情况下 di + dj = 0
-        pos_errs.append(((di + dj) / L)**2)
-        print(f"di={di}, dj={dj}, (di + dj)**2={(di + dj)**2}")
+        pos_errs.append(((di + dj) / L) ** 2)
+        amp_errs.append((amps_n[i] - amps_n[j]) ** 2)
 
-        # 强度对称：理想情况下 amps_n[i] == amps_n[j]
-        amp_errs.append((amps_n[i] - amps_n[j])**2)
-
-    # 归一化：避免不同配对数量下的偏置（沿用你的写法）
     pos_err = float(np.mean(pos_errs)) / 4 if pos_errs else 0.0
     amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
-    print(f"位置误差：{pos_err}，强度误差：{amp_err}")
 
-    # 7) 汇总适应度
     fitness = w_pos * pos_err + w_amp * amp_err
     return fitness
+
 
 
 
@@ -432,9 +468,11 @@ def voltage_pso_optimization(
                 y_dBm_peaks, x_nm_peaks, peaks, properties, y_lvbo = Get_Peaks(y_dBm, x_nm)
                 meas_peaks  = list(zip(x_nm_peaks, y_dBm_peaks))
 
+                all_spectra.append((np.array(x_nm), np.array(y_lvbo)))  # 把光谱加进动图素材
+
                 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
 
-                fitness = fitness_symmetry(meas_peaks)
+                fitness = fitness_symmetry(meas_peaks, widths = widths)
                 print(fitness)
                 # 更新个体最优
                 if fitness is not None and fitness < personal_best_scores[i]:
@@ -442,20 +480,20 @@ def voltage_pso_optimization(
                     personal_best_positions[i] = v
 
                 # 更新全局最优
-                if personal_best_scores[i] < global_best_score:
+                if personal_best_scores[i] <= global_best_score:
                     global_best_score = personal_best_scores[i]
                     global_best_position = personal_best_positions[i]
 
                     # ★★★ 新增：每当找到更小的全局适应度时，保存当前光谱数据到新文件
-                    k = k+1
-                    filename = f"osa_best_iter{iteration + 1}_particle{i + 1}_best{k}.txt"
-                    format_results(y_dBm, x_nm, precision=2, save_file=filename)
+                    # k = k+1
+                    # filename = f"osa_best_iter{iteration + 1}_particle{i + 1}_best{k}.txt"
+                    # format_results(y_dBm, x_nm, precision=2, save_file=filename)
 
                 print(f"粒子 {i+1} 电压 {v} -> 峰的个数：{len(y_dBm_peaks)} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
 
 
                 # ❗❗❗❗ 退出条件
-                if fitness <= 0.001:
+                if fitness <= 0.01:
                     make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2)  # 动图制作
                     return
 
@@ -472,7 +510,7 @@ def voltage_pso_optimization(
                         particles[i] = np.random.uniform(v_min, v_max, 4)
                     else:
                         # 已经有不错的解了：在全局最优附近随机微调
-                        local_span = 6  # 比如 ±5V 的小立方体
+                        local_span =3 # 比如 ±5V 的小立方体
                         particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
                         particles[i] = np.clip(particles[i], v_min, v_max)
 
@@ -484,7 +522,7 @@ def voltage_pso_optimization(
 
                 # 设定一个“好到什么程度”的参考尺度，比如 0.05
                 # 小于它就认为已经很不错了，进入很小步长微调区间
-                score_ref = 0.1
+                score_ref = 0.4
 
                 # 把 score 截断到 [0, score_ref]
                 score_clipped = min(max(score, 0.0), score_ref)

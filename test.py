@@ -11,7 +11,7 @@ from scipy.signal import savgol_filter
 x_nm = []
 y_dBm = []
 
-with open("single_soliton.txt", "r") as f:
+with open("osa_formatted_output_meas.txt", "r") as f:
     for line in f:
         # 忽略空行
         if not line.strip():
