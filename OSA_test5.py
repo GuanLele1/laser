@@ -65,8 +65,8 @@ class OSA_MeasurementSystem:
         # ------------------------------
         # 设置波长区间和参数
         # ------------------------------
-        osa.write(":SENSE:WAVELENGTH:START 1520NM")       # 起始波长
-        osa.write(":SENSE:WAVELENGTH:STOP 1590NM")        # 结束波长
+        osa.write(":SENSE:WAVELENGTH:START 1530NM")       # 起始波长
+        osa.write(":SENSE:WAVELENGTH:STOP 1610NM")        # 结束波长
         osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.2NM")   # 分辨率
         osa.write(":SENSE:SENSITIVITY HIGH1")             # 灵敏度
 
@@ -125,8 +125,8 @@ class OSA_MeasurementSystem:
         # ------------------------------
         # 强度限幅：小于 -65 的都改为 -65
         # ------------------------------
-        y_dBm = [max(y, -65.0) for y in y_dBm]
-
+        # y_dBm = [max(y, -65.0) for y in y_dBm]
+        format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output.txt")
         return y_dBm, x_nm
 
     def close(self):
@@ -229,7 +229,7 @@ def Get_Peaks(y_dBm, x_nm):
     y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
 
     peaks, properties = find_peaks(
-        y_dBm, height=-63, prominence=0.2, width=8
+        y_dBm, height=-60, prominence=0.2, width=8
     )
 
     if len(peaks) == 0:
@@ -390,6 +390,7 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
 
                 if symmetry_err < transition_err_threshold:
                     # 认为是“过渡态束缚双孤子”
+                    print(f"过渡态：{symmetry_err}")
                     return transition_fitness_value
 
         # 有 3 或 5 个峰但不满足过渡态条件 → 按原规则，不合格
@@ -448,6 +449,8 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
     amp_err = float(np.mean(amp_errs)) if amp_errs else 0.0
 
     fitness = w_pos * pos_err + w_amp * amp_err
+    if fitness > 1:
+        return huge
     return fitness
 
 
@@ -506,14 +509,14 @@ def voltage_pso_optimization(
                 fitness = fitness_symmetry(meas_peaks, widths = widths)
                 print(fitness)
                 # 更新个体最优
-                if fitness is not None and fitness < personal_best_scores[i]:
+                if fitness is not None and np.isfinite(fitness) and fitness < personal_best_scores[i]:
                     personal_best_scores[i] = fitness
-                    personal_best_positions[i] = v
+                    personal_best_positions[i] = v.copy()
 
                 # 更新全局最优
-                if personal_best_scores[i] <= global_best_score:
+                if np.isfinite(personal_best_scores[i]) and personal_best_scores[i] < global_best_score:
                     global_best_score = personal_best_scores[i]
-                    global_best_position = personal_best_positions[i]
+                    global_best_position = personal_best_positions[i].copy()
 
                     # ★★★ 新增：每当找到更小的全局适应度时，保存当前光谱数据到新文件
                     # k = k+1
@@ -565,7 +568,7 @@ def voltage_pso_optimization(
                 factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
 
                 # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
-                v_step_max_base = 4.0
+                v_step_max_base = 7.0
                 v_step_max = v_step_max_base * factor
                 # ===================================================
 
@@ -605,6 +608,8 @@ def voltage_pso_optimization(
 
 if __name__ == "__main__":
     # meas = OSA_MeasurementSystem()
+    # meas.read_OSA_exist()
+    # meas.close()
     # y_dBm, x_nm = meas.read_OSA()
     # meas.close()
     # y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
