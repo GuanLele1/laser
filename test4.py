@@ -1,5 +1,5 @@
 import numpy as np
-import  OSA_test4
+import  OSA_test5
 from fontTools.unicodedata import block
 from scipy.signal import find_peaks
 import matplotlib.pyplot as plt
@@ -50,10 +50,10 @@ if y_dBm:
 # y_dBm = np.array(y_dBm)
 
 
-y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test4.Get_Peaks(y_dBm, x_nm)
+y_dBm_peak, x_nm_peak, peaks,  properties, y_dBm= OSA_test5.Get_Peaks(y_dBm, x_nm)
 meas_peaks  = list(zip(x_nm_peak, y_dBm_peak))
 widths = properties["widths"]  # find_peaks 给出的每个峰的宽度
-fitness = OSA_test4.fitness_symmetry(meas_peaks, widths = widths)
+fitness = OSA_test5.fitness_symmetry(meas_peaks, widths = widths)
 
 # 确保 peaks 是整数类型
 #peaks = np.array(peaks, dtype=int)

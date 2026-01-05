@@ -39,108 +39,139 @@ def format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output.txt
 
 
 #示波器操作
-class MeasurementSystem:
-    """
-    测量系统（示波器接口）
-    """
-
-    def __init__(self, visa_address='USB0::0x1AB1::0x04B1::DS4B201100033::INSTR'):
+class RTP_Oscilloscope:
+    def __init__(self):
+        """
+        初始化示波器连接
+        :param resource_string: 完整的VISA资源字符串
+                                例如: 'TCPIP::192.168.1.1::hislip0::INSTR'
+                                或 'USB0::0x0AAD::0x0197::123456::INSTR'
+        """
         self.rm = pyvisa.ResourceManager()
         try:
-            self.osc = self.rm.open_resource(visa_address)
-            self.osc.timeout = 5000  # 设置5秒超时
-        except pyvisa.Error as e:
-            print(f"示波器连接失败: {str(e)}")
-            self.osc = None
+            # 直接使用传入的资源字符串打开连接
+            self.instr = self.rm.open_resource('USB0::0x0AAD::0x0197::1320.5007k04-103067::INSTR')
 
-    def get_frequency(self):
-        """获取通道2的频率测量值"""
-        if not self.osc:
-            return np.nan
+            # 设置超时 (USB通常很快，但截图传输需要较长时间)
+            self.instr.timeout = 10000
+
+            # 设置读写结束符 (这对 USB 通信也很重要)
+            self.instr.read_termination = '\n'
+            self.instr.write_termination = '\n'
+
+            # 查询仪器ID以确认连接成功
+            idn = self.instr.query("*IDN?")
+            print(f"成功连接到: {idn.strip()}")
+
+            # 清除状态寄存器
+            self.instr.write("*CLS")
+
+        except Exception as e:
+            print(f"连接失败: {e}")
+            raise
+
+    # ... measure_channel1_frequency 和 take_screenshot 函数保持完全不变 ...
+    # ... 因为 SCPI 命令内容与物理接口无关 ...
+
+    def measure_channel1_frequency(self):
+        """
+                功能1: 测量通道1的频率
+                参考手册章节: 26.3.2.1 Performing amplitude/time measurements
+                """
         try:
-            self.osc.write(':MEASure:SOURce CHANnel1')
-            self.osc.write(':MEASure:FREQuency?')
-            result = self.osc.read().strip()
-            result = float(result)
-            if result == 9.9e+37:
-                print("错误：未检测到有效信号或测量超限！")
-                return np.nan
-            return result
+            # 1. 确保通道1已打开 (Section 26.3.1)
+            self.instr.write("CHANnel1:STATe ON")
 
-        except pyvisa.Error as e:
-            print(f"频率测量失败: {str(e)}")
-            return np.nan
+            # 2. 启用测量组1 (MEASurement1)
+            self.instr.write("MEASurement1:ENABle ON")
 
-    def screenshot(self, filename="rigol_ds4000_screenshot.png", color=True):
-        """
-        抓取当前屏幕截图并保存为 PNG 到本机文件系统。
-        :param filename: 保存文件名（.png）
-        :param color: True=彩色，False=黑白
-        :return: 保存的文件路径；失败时返回 None
-        """
-        if not self.osc:
+            # 3. 设置测量源为通道1波形1 (C1W1) (Section 26.4.2 Waveform parameter)
+            self.instr.write("MEASurement1:SOURce C1W1")
+
+            # 4. 设置测量类型为频率 (FREQ) (Section 26.3.2.1)
+            self.instr.write("MEASurement1:MAIN FREQuency")
+
+            # 5. 等待操作完成 (*OPC?) 确保设置已应用
+            self.instr.query("*OPC?")
+
+            # 6. 获取当前测量结果 (Section 26.3.2.1)
+            # MEASurement<m>:RESult:ACTual? 返回当前统计周期的测量值
+            result_str = self.instr.query("MEASurement1:RESult:ACTual?")
+
+            freq_value = float(result_str)
+            print(f"通道1 频率测量结果: {freq_value / 1e6:.4f} MHz")
+            return freq_value
+
+        except Exception as e:
+            print(f"测量频率失败: {e}")
             return None
+
+    def take_screenshot(self, local_filepath="screenshot.png"):
+        """
+        功能2: 截图并保存到本地电脑
+        参考手册章节: 26.3.5.1 Saving a screenshot to file
+        过程: 先在示波器内部保存，读取二进制数据，再保存到本地，最后删除示波器内部文件。
+        """
+        # 示波器内部的临时路径 (Windows系统路径)
+        scope_temp_path = r"C:\Temp\remote_screen.png"
+
         try:
-            # 尝试增大一次读取块大小，避免PNG被截断（不影响其它方法）
-            try:
-                #提高超时时间
-                #self.osc.timeout = max(self.osc.timeout, 20000)
-                self.osc.chunk_size = max(getattr(self.osc, "chunk_size", 1024 * 1024), 1024 * 1024)
-            except Exception:
-                pass
+            print("正在执行截图...")
 
-            # # RIGOL DS4000 系列：:DISP:DATA? {ON|OFF}[,OFF]
-            # # ON=彩色；OFF=单色；第二个 OFF 表示不叠加菜单（不同固件可能忽略）
-            # mode = "ON" if color else "OFF"
-            self.osc.write(f":DISPlay:DATA?")
+            # 1. 确保显示更新已打开，否则截图可能为黑屏 (Section 26.7.2.5)
+            # 手册提示: To get a correct screenshot, turn on the display first.
+            self.instr.write("SYSTem:DISPlay:UPDate ON")
 
-            # 读取二进制块（IEEE 488.2 block），形如 b'#9<length><payload>'
-            raw = self.osc.read_raw()
-            if not raw:
-                return None
+            # 2. 设置截图格式为 PNG (Section 26.16.8)
+            self.instr.write("HCOPy:DEVice:LANGuage PNG")
 
-            # 解析二进制块头
-            # 期望格式：b'#' + 1位数字(表示长度字段的位数n) + n位十进制长度 + 数据payload
-            if raw[0:1] == b'#' and len(raw) >= 2:
-                n_digits = int(chr(raw[1]))
-                if n_digits > 0 and len(raw) >= 2 + n_digits:
-                    total_len = int(raw[2:2 + n_digits].decode("ascii", errors="ignore"))
-                    start = 2 + n_digits
-                    payload = raw[start:start + total_len]
-                else:
-                    # 异常回退：尽量当作纯 PNG 处理
-                    payload = raw.lstrip(b'#0123456789')
-            else:
-                # 没有块头时，直接当作 PNG 数据
-                payload = raw
+            # 3. 设置截图目标为大容量存储 (Mass Memory) (Section 26.3.5.1)
+            self.instr.write("HCOPy:DESTination 'MMEM'")
 
-            # 保存文件
-            with open(filename, "wb") as f:
-                f.write(payload)
+            # 4. 设置示波器内部保存的文件名 (Section 26.3.5.1)
+            self.instr.write(f"MMEMory:NAME '{scope_temp_path}'")
 
-            # 简单校验 PNG 头（非致命）
-            if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
-                # 某些固件可能返回 BMP；你也可以在这里加一个 BMP 头判断
-                pass
+            # 5. 执行截图 (HCOPy:IMMediate)
+            self.instr.write("HCOPy:IMMediate")
 
-            #打开文件
-            if sys.platform.startswith("win"):
-                os.startfile(filename)
-            elif sys.platform == "darwin":
-                os.system(f"open '{filename}'")
-            else:
-                os.system(f"xdg-open '{filename}'")
+            # 等待截图完成
+            self.instr.query("*OPC?")
 
-            return filename
+            # 6. 将文件从示波器传输到本地电脑
+            # 使用 MMEMory:DATA? 命令读取文件数据 (Section 26.16.2 / 26.3.5.2)
+            print(f"正在将截图从示波器传输到本地: {local_filepath}")
+            self.instr.write(f"MMEMory:DATA? '{scope_temp_path}'")
+
+            # 读取二进制块数据
+            image_data = self.instr.read_raw()
+
+            # 解析 SCPI 二进制块头 (例如 #41234...) 并去除
+            # 注意：read_raw读取的数据通常包含头部信息，需要手动处理或使用pyvisa的工具
+            # 这里使用更稳健的 pyvisa query_binary_values 方法重新获取
+            image_data = self.instr.query_binary_values(
+                f"MMEMory:DATA? '{scope_temp_path}'",
+                datatype='B',
+                header_fmt='ieee',
+                container=bytearray
+            )
+
+            # 7. 保存到本地文件
+            with open(local_filepath, 'wb') as f:
+                f.write(image_data)
+
+            print("截图保存成功。")
+
+            # 8. 清理示波器内部的临时文件 (Section 26.3.5.2)
+            self.instr.write(f"MMEMory:DELete '{scope_temp_path}'")
 
         except Exception as e:
             print(f"截图失败: {e}")
-            return None
 
     def close(self):
-        if self.osc:
-            self.osc.close()
-
+        if hasattr(self, 'instr'):
+            self.instr.close()
+        if hasattr(self, 'rm'):
+            self.rm.close()
 
 
 
@@ -164,6 +195,8 @@ class OSA_MeasurementSystem:
         self.osa = self.rm.open_resource(f"TCPIP0::{ip}::inst0::INSTR")  # VXI-11 接口
         self.osa.timeout = 30000  # ms，扫描时间可能较长
 
+
+
     def read_OSA(self):
         """
         执行一次扫描并读取数据
@@ -175,8 +208,8 @@ class OSA_MeasurementSystem:
         # ------------------------------
         # 设置波长区间和参数
         # ------------------------------
-        osa.write(":SENSE:WAVELENGTH:START 1530NM")       # 起始波长
-        osa.write(":SENSE:WAVELENGTH:STOP 1610NM")        # 结束波长
+        osa.write(":SENSE:WAVELENGTH:START 1500NM")       # 起始波长
+        osa.write(":SENSE:WAVELENGTH:STOP 1560NM")        # 结束波长
         osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.2NM")   # 分辨率
         osa.write(":SENSE:SENSITIVITY HIGH1")             # 灵敏度
 
@@ -413,6 +446,30 @@ def Get_Peaks(y_dBm, x_nm):
     properties["widths"]      = new_width_pts
     properties["widths_nm"]   = new_width_nm
 
+    # ===== 新增：用“重写后的 widths”过滤掉 width < 50 的峰（最小改动）=====
+    width_min = 10  # 你要的阈值
+    keep = properties["widths"] >= width_min
+
+    # 如果全被过滤掉，返回“无峰”
+    if not np.any(keep):
+        peaks = np.array([], dtype=int)
+        # 保持接口一致：y_dBm[peaks] 和 x_nm[peaks] 都是空数组
+        return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
+
+    # 过滤 peaks
+    peaks = peaks[keep]
+
+    # 同步过滤 properties 里“与峰一一对应”的数组项（长度等于原峰数的那些）
+    # 注意：properties 里还有一些标量/非数组，不动即可
+    for k, v in list(properties.items()):
+        try:
+            v_arr = np.asarray(v)
+            if v_arr.shape[0] == keep.shape[0]:  # 与峰数一致
+                properties[k] = v_arr[keep]
+        except Exception:
+            pass
+    # ===============================================================
+
     return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
 
 
@@ -511,7 +568,7 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
     # -----------------------------------------------------
 
     # ------------------- 原有 8 峰逻辑开始 ----------------
-    if meas_peaks is None or len(meas_peaks) < 8 or len(meas_peaks) >= 10:
+    if meas_peaks is None or len(meas_peaks) < 8:
         return huge
 
     # 选取强度最大的 8 个峰
@@ -586,7 +643,7 @@ def voltage_pso_optimization(
     """
     ctrl = PCDM02DigitalController(port='COM7')
     meas = OSA_MeasurementSystem()
-    OSC_meas = MeasurementSystem()
+    OSC_meas = RTP_Oscilloscope()
 
     try:
         # 初始化
@@ -644,12 +701,12 @@ def voltage_pso_optimization(
                 print(f"粒子 {i+1} 电压 {v} -> 峰的个数：{len(y_dBm_peaks)} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
 
 
-                # ❗❗❗❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ 退出条件
+                # ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ 退出条件
                 if fitness <= 0.01:
                     frequencies = []
                     for _ in range(20):
-                        freq = meas.get_frequency()
-                        if freq > 1e9 or np.isnan(freq):
+                        freq = OSC_meas.measure_channel1_frequency()
+                        if np.isnan(freq):
                             std = np.nan
                             break
                         time.sleep(0.2)
@@ -740,20 +797,59 @@ def voltage_pso_optimization(
         meas.close()
 
 
+def find_freq_cmd(osc):
+    osc.timeout = 20000
+    osc.read_termination = '\n'
+    osc.write_termination = '\n'
+    osc.write("*CLS")
+
+    cand = [
+        "MEASure:FREQuency?",          # 一些R&S也支持
+        "MEASure:ITEM? FREQuency,C2",  # 常见“item”风格
+        "CALCulate:MEASure:FREQuency? C2",
+        "CALCulate:MARKer1:X?",        # 如果需要用marker体系
+    ]
+
+    for c in cand:
+        try:
+            print("TRY", c)
+            r = osc.query(c).strip()
+            print("OK ", c, "=>", r)
+        except Exception as e:
+            try:
+                err = osc.query("SYST:ERR?").strip()
+            except Exception:
+                err = "ERR? failed"
+            print("NO ", c, "=>", e, "|", err)
+
 
 if __name__ == "__main__":
-    # meas = OSA_MeasurementSystem()
-    # meas.read_OSA_exist()
-    # meas.close()
-    # y_dBm, x_nm = meas.read_OSA()
-    # meas.close()
+    meas = OSA_MeasurementSystem()
+    y_dBm, x_nm = meas.read_OSA()
+    meas.close()
     # y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
     # meas_peaks = list(zip(x_nm_peaks, y_dBm_peaks))
     #
     # fitness = fitness_symmetry(meas_peaks, 5)
     # print(fitness)
     # format_results(y_dBm, x_nm, precision=2, save_file="osa_formatted_output_meas.txt")
-    voltage_pso_optimization()
+
+    # OSCquencies = []
+    # for _meas = RTP_Oscilloscope()
+    #     # fre_ in range(20):
+    #     freq = OSC_meas.measure_channel1_frequency()
+    #     # if freq > 1e9 or np.isnan(freq):
+    #     #     std = np.nan
+    #     #     break
+    #     time.sleep(0.05)
+    #     frequencies.append(freq)
+    # if len(frequencies) == 20:
+    #     std = np.std(frequencies)
+    # print(frequencies)
+    # print(f"当前频率稳定性std = {std}")
+    # OSC_meas.close()
+
+    # voltage_pso_optimization()
 
 # # 打印部分数据
 # #print(f"共 {npts} 点")
