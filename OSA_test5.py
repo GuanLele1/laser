@@ -106,7 +106,7 @@ class RTP_Oscilloscope:
             print(f"测量频率失败: {e}")
             return None
 
-    def take_screenshot(self, local_filepath="screenshot.png"):
+    def take_screenshot(self, local_filepath="screenshot2.png"):
         """
         功能2: 截图并保存到本地电脑
         参考手册章节: 26.3.5.1 Saving a screenshot to file
@@ -210,8 +210,8 @@ class OSA_MeasurementSystem:
         # ------------------------------
         # 设置波长区间和参数
         # ------------------------------
-        osa.write(":SENSE:WAVELENGTH:START 1500NM")       # 起始波长
-        osa.write(":SENSE:WAVELENGTH:STOP 1560NM")        # 结束波长
+        osa.write(":SENSE:WAVELENGTH:START 1509.75NM")       # 起始波长
+        osa.write(":SENSE:WAVELENGTH:STOP 1550.25NM")        # 结束波长
         osa.write(":SENSE:BANDWIDTH:RESOLUTION 0.2NM")   # 分辨率
         osa.write(":SENSE:SENSITIVITY HIGH1")             # 灵敏度
 
@@ -374,10 +374,10 @@ def make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2):
 #取峰及其属性
 def Get_Peaks(y_dBm, x_nm):
 
-    y_dBm = savgol_filter(y_dBm, window_length=31, polyorder=3)
+    y_dBm = savgol_filter(y_dBm, window_length=11, polyorder=3)
 
     peaks, properties = find_peaks(
-        y_dBm, height=-70, prominence=0.2, width=8
+        y_dBm, height=-53, prominence=0.2, width=8
     )
 
     if len(peaks) == 0:
@@ -426,10 +426,63 @@ def Get_Peaks(y_dBm, x_nm):
             left_bases[i]  = orig_left[i]
             right_bases[i] = orig_right[i]
 
-        # ===== 最右峰（i == 最后） → 完全保持 SciPy 原始 =====
-        elif i == len(peaks) - 1:
-            left_bases[i]  = orig_left[i]
-            right_bases[i] = orig_right[i]
+        # # ===== 最右峰（i == 最后） → 完全保持 SciPy 原始 =====
+        # elif i == len(peaks) - 1:
+        #     left_bases[i]  = orig_left[i]
+        #     right_bases[i] = orig_right[i]
+        #
+        # ============ 修改：只在“最强峰”离左右谷底过近时才删除，并更新邻峰谷底 ============
+        min_peak_valley_nm = 1
+
+        while True:
+            if len(peaks) == 0:
+                return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
+
+            # 找到“最强峰”（y_dBm 最大的峰）
+            i_max = int(np.argmax(y_dBm[peaks]))
+            p_max = peaks[i_max]
+
+            # 只计算最强峰到左右谷底的距离（nm）
+            dL = float(np.abs(x_nm[p_max] - x_nm[left_bases[i_max]]))
+            dR = float(np.abs(x_nm[p_max] - x_nm[right_bases[i_max]]))
+
+            # 只有最强峰任一侧 < 阈值才删
+            bad_max = (dL < min_peak_valley_nm) or (dR < min_peak_valley_nm)
+
+            # 最强峰不需要删 => 结束（不删其他峰）
+            if not bad_max:
+                break
+
+            # 删除最强峰（同步删除 bases）
+            keep = np.ones(len(peaks), dtype=bool)
+            keep[i_max] = False
+            peaks = peaks[keep]
+            left_bases = left_bases[keep]
+            right_bases = right_bases[keep]
+
+            if len(peaks) == 0:
+                return y_dBm[peaks], x_nm[peaks], peaks, properties, y_dBm
+
+            # ---- 删除后：按“相邻两峰之间最深谷”重新更新剩余峰的 bases ----
+            for i, p in enumerate(peaks):
+                if 0 < i < len(peaks) - 1:
+                    p_left = peaks[i - 1]
+                    p_right = peaks[i + 1]
+
+                    mask_left = (valleys > p_left) & (valleys < p)
+                    v_left = valleys[mask_left]
+                    if v_left.size > 0:
+                        left_bases[i] = v_left[np.argmin(y_dBm[v_left])]
+
+                    mask_right = (valleys > p) & (valleys < p_right)
+                    v_right = valleys[mask_right]
+                    if v_right.size > 0:
+                        right_bases[i] = v_right[np.argmin(y_dBm[v_right])]
+
+                # 端点峰：保持当前 left_bases/right_bases（删峰后它们已同步被裁剪）
+                # 不额外强行回到 SciPy 原始值，避免不连续
+
+        # ============ 修改逻辑结束 ============
 
     # ---- 基于新的左右谷底更新宽度（仅中间峰） ----
     new_width_pts = right_bases - left_bases
@@ -491,71 +544,70 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
     3. 8 个峰：完整双孤子分子（原有逻辑）
     """
 
-    # --- 新：峰数 < 8 的统一过渡态逻辑（最强峰做轴，最多两对边带） ---
+    # --- 新：统一单孤子过渡态逻辑（最强峰做轴，最多两对边带） ---
     if meas_peaks is None or len(meas_peaks) == 0:
         return huge
 
-    if len(meas_peaks) < 8:
-        if widths is None or len(widths) != len(meas_peaks):
-            return huge
-
+    # 先看 widths 是否可用（因为要第一时间判断最强峰宽度）
+    if widths is not None and len(widths) == len(meas_peaks):
         xs = np.array([p[0] for p in meas_peaks], dtype=float)
         amps = np.array([p[1] for p in meas_peaks], dtype=float)
         widths_arr = np.array(widths, dtype=float)
 
-        # 1) 最强峰作为对称轴
+        # 1) 第一时间判断：最强峰宽度是否 > 350
         idx0 = int(np.argmax(amps))
-        if widths_arr[idx0] <= 400:  # 主峰宽度门槛
+        if widths_arr[idx0] > 300 and len(meas_peaks) > 2:
+            axis = float(xs[idx0])
+
+            # 2) 幅度归一化
+            s = float(np.sum(amps))
+            if s == 0:
+                return huge
+            amps_n = amps / s
+
+            # 3) 轴左右峰索引，按“离轴距离”从近到远排序
+            left = np.where(xs < axis)[0]
+            right = np.where(xs > axis)[0]
+            if left.size == 0 or right.size == 0:
+                return huge
+
+            left = left[np.argsort(np.abs(xs[left] - axis))]
+            right = right[np.argsort(np.abs(xs[right] - axis))]
+
+            # 最多两对
+            num_pairs = min(2, left.size, right.size)
+            if num_pairs < 1:
+                return huge
+
+            # 4) 归一化尺度 L（用参与配对的峰的最远距离）
+            used = np.concatenate([left[:num_pairs], right[:num_pairs]])
+            L = float(np.max(np.abs(xs[used] - axis)))
+            if L == 0:
+                return huge
+
+            pos_errs, amp_errs = [], []
+            for k in range(num_pairs):
+                i = int(left[k])
+                j = int(right[k])
+                di = xs[i] - axis
+                dj = xs[j] - axis
+                pos_errs.append(((di + dj) / L) ** 2)
+                amp_errs.append((amps_n[i] - amps_n[j]) ** 2)
+
+            pos_err = float(np.mean(pos_errs)) / 4.0
+            amp_err = float(np.mean(amp_errs))
+            symmetry_err = pos_err + amp_err
+            print(f"unified symmetry fitness {symmetry_err}")
+
+            if symmetry_err < 0.25:
+                return 0.5
             return huge
-        axis = float(xs[idx0])
 
-        # 2) 幅度归一化
-        s = float(np.sum(amps))
-        if s == 0:
-            return huge
-        amps_n = amps / s
-
-        # 3) 轴左右峰索引，按“离轴距离”从近到远排序
-        left = np.where(xs < axis)[0]
-        right = np.where(xs > axis)[0]
-        if left.size == 0 or right.size == 0:
-            return huge
-
-        left = left[np.argsort(np.abs(xs[left] - axis))]
-        right = right[np.argsort(np.abs(xs[right] - axis))]
-
-        # 最多两对
-        num_pairs = min(2, left.size, right.size)
-        if num_pairs < 1:
-            return huge
-
-        # 4) 归一化尺度 L（用参与配对的峰的最远距离）
-        used = np.concatenate([left[:num_pairs], right[:num_pairs]])
-        L = float(np.max(np.abs(xs[used] - axis)))
-        if L == 0:
-            return huge
-
-        pos_errs, amp_errs = [], []
-        for k in range(num_pairs):
-            i = int(left[k]);
-            j = int(right[k])
-            di = xs[i] - axis
-            dj = xs[j] - axis
-            pos_errs.append(((di + dj) / L) ** 2)
-            amp_errs.append((amps_n[i] - amps_n[j]) ** 2)
-
-        pos_err = float(np.mean(pos_errs)) / 4.0
-        amp_err = float(np.mean(amp_errs))
-        symmetry_err = pos_err + amp_err
-        print(f"8峰以下fitness{symmetry_err}")
-
-        if symmetry_err < 0.02:  # 你的阈值（可调）
-            return 0.5
-        return huge
+    # 如果 widths 不可用，或最强峰宽度 <= 350，则不在这里返回，继续走你后面的原逻辑
     # -----------------------------------------------------
 
     # ------------------- 原有 8 峰逻辑开始 ----------------
-    if meas_peaks is None or len(meas_peaks) < 8:
+    if meas_peaks is None or len(meas_peaks) < 6 or len(meas_peaks) > 11:
         return huge
 
     # ===== 新增门槛 + 新的 8 峰选择方式 =====
@@ -574,29 +626,36 @@ def fitness_symmetry(meas_peaks, w_pos=100, w_amp=100,
     amp_a = float(meas_peaks[idx_a][1])
     amp_b = float(meas_peaks[idx_b][1])
 
-    # 强度差门槛
-    if abs(amp_a - amp_b) >= 1.5:
+    x_a = float(meas_peaks[idx_a][0])
+    x_b = float(meas_peaks[idx_b][0])
+
+    # # 强度差门槛
+    # if abs(amp_a - amp_b) >= 1.5:
+    #     return huge
+
+    # 距离差门槛
+    if abs(x_a - x_b) <= 1.2:
         return huge
 
     # 3) 判断这两个最强峰在 x 排序后是否相邻
     pos_a = int(np.where(orig_idx_all == idx_a)[0][0])
     pos_b = int(np.where(orig_idx_all == idx_b)[0][0])
-    if abs(pos_a - pos_b) != 1:
+    if abs(pos_a - pos_b) != 1 or widths[idx_a] > 120 or widths[idx_b] > 120:
         return huge
 
     # 4) 以这两个峰为中心：左侧取 3 个 + 两个中心峰 + 右侧取 3 个 => 8 个
     left_pos = min(pos_a, pos_b)
     right_pos = max(pos_a, pos_b)
 
-    start = left_pos - 3
-    end = right_pos + 3
+    start = left_pos - 2
+    end = right_pos + 2
 
     # 边界检查：必须能凑够 8 个
     if start < 0 or end >= len(peaks_x):
         return huge
 
     selected = peaks_x[start:end + 1]  # 长度应为 8
-    if len(selected) != 8:
+    if len(selected) != 6:
         return huge
 
     # 5) 用这 8 个峰进入你原来的对称性计算（保持不变）
@@ -656,7 +715,7 @@ def voltage_pso_optimization(
         v_min: float = 0.0,
         v_max: float = 135.0,
         num_particles: int = 10,
-        max_iterations: int = 100
+        max_iterations: int = 1000
 ):
     """
     用粒子群算法(PSO)自动优化输出电压，使目标频率标准差最小（四通道EPC优化）
@@ -728,6 +787,7 @@ def voltage_pso_optimization(
                 # ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ 退出条件
                 if fitness <= 0.1:
                     frequencies = []
+                    time.sleep(5)
                     for _ in range(20):
                         freq = OSC_meas.measure_channel1_frequency()
                         if np.isnan(freq):
@@ -739,7 +799,7 @@ def voltage_pso_optimization(
                         std = np.std(frequencies)
                     print(f"当前频率稳定性std = {std}")
 
-                    if std < 25000000 and std > 10:
+                    if std < 35000 and std > 10:
                         print("条件全部达成，退出寻优~")
                         make_osa_animation(all_spectra, filename="osa_pso.gif", fps=2)  # 动图制作
                         OSC_meas.take_screenshot()
@@ -760,7 +820,7 @@ def voltage_pso_optimization(
                         particles[i] = np.random.uniform(v_min, v_max, 4)
                     else:
                         # 已经有不错的解了：在全局最优附近随机微调
-                        local_span =3 # 比如 ±5V 的小立方体
+                        local_span = 5 # 比如 ±5V 的小立方体
                         particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
                         particles[i] = np.clip(particles[i], v_min, v_max)
 
@@ -784,7 +844,7 @@ def voltage_pso_optimization(
                 factor = step_min_factor + (1.0 - step_min_factor) * (score_clipped / score_ref)
 
                 # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
-                v_step_max_base = 7.0
+                v_step_max_base = 12.0
                 v_step_max = v_step_max_base * factor
                 # ===================================================
 
@@ -801,9 +861,17 @@ def voltage_pso_optimization(
                 # 用适应度决定的最大步长限制速度
                 velocities[i] = np.clip(velocities[i], -v_step_max, v_step_max)
 
+                # 更新粒子位置前，记录旧位置(用于打印步长)
+                old_pos = particles[i].copy()
+
                 # 更新粒子位置
                 particles[i] += velocities[i]
                 particles[i] = np.clip(particles[i], v_min, v_max)
+
+                # 计算并打印实际步长
+                step_vec = particles[i] - old_pos
+                step_norm = np.linalg.norm(step_vec)
+                print(f"Particle {i} step norm = {step_norm:.2f} V, ")
 
             print(f"当前最优电压: {global_best_position} V  最小分数: {global_best_score:.2f} Hz")
 
@@ -874,7 +942,7 @@ if __name__ == "__main__":
     # OSC_meas.take_screenshot()
     # OSC_meas.close()
 
-    voltage_pso_optimization()
+    # voltage_pso_optimization()
 
 # # 打印部分数据
 # #print(f"共 {npts} 点")

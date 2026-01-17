@@ -3,8 +3,8 @@ from PIL import Image, ImageSequence
 def change_gif_durations(
     input_gif: str,
     output_gif: str = "osa_pso_new.gif",
-    normal_ms: int = 50,   # 前面每帧 0.05s = 50ms
-    last_ms: int = 3000    # 最后一帧 3s = 3000ms
+    normal_ms: int = 100,   # 前面每帧 0.05s = 50ms
+    last_ms: int = 10000    # 最后一帧 3s = 3000ms
 ):
     """
     将 GIF 的前 n-1 帧设置为 normal_ms，最后一帧设置为 last_ms
@@ -39,6 +39,6 @@ if __name__ == "__main__":
     change_gif_durations(
         "osa_pso.gif",
         "osa_pso_slow_last.gif",
-        normal_ms=50,
-        last_ms=3000
+        normal_ms=80,
+        last_ms=8000
     )

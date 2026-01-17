@@ -486,7 +486,7 @@ def voltage_pso_optimization3(
 
                 # 更新个体最优
                 if std is not None:
-                    if std < 30000 and (std > 10):
+                    if std < 50000 and (std > 10):
                         print(f"[提前终止] 粒子 {i + 1} 标准差为 {std:.2f} Hz，小于 300000 Hz，提前设置电压并终止优化。")
                         # 为每个通道设置电压并终止
                         for channel in range(1, 5):  # 四个通道
