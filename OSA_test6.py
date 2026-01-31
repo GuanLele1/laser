@@ -422,7 +422,7 @@ def Get_Peaks(y_dBm, x_nm):
     y_dBm = savgol_filter(y_dBm, window_length=11, polyorder=3)
 
     peaks, properties = find_peaks(
-        y_dBm, height=-55, prominence=0.2, width=8
+        y_dBm, height=-58, prominence=0.2, width=8
     )
 
     if len(peaks) == 0:
@@ -477,7 +477,7 @@ def Get_Peaks(y_dBm, x_nm):
             right_bases[i] = orig_right[i]
 
     # ============ 修改：只在“最强峰”离左右谷底过近时才删除，并更新邻峰谷底 ============
-    min_peak_valley_nm = 0.8
+    min_peak_valley_nm = 0.9
 
     while True:
         if len(peaks) == 0:
@@ -786,12 +786,14 @@ def voltage_pso_optimization(
         global_best_score = np.inf  # 全局最优分数
         k = 0   #优秀个体计数
         all_spectra = []  # 用来记录每次迭代的光谱 (x_nm, y_dBm) 做动图用
+        personal_best_freq_scores = np.full(num_particles, np.inf)  # 频率std适应度
+        global_best_freq_score = np.inf  # 全局最优频率std
 
         # ---- 新增：第一次 global_best < 0.3 后，下一轮聚焦撒点（只做一次）----
         focus_once = False  # 是否已触发过
         focus_next = False  # 下一轮是否执行
         focus_center = None  # 聚焦中心（当时的 global_best_position）
-        focus_span = 2.0  # ±2 V
+        focus_span = 1.5  # ±2 V
         # -------------------------------------------------------------------
 
         # max_iterations 次的迭代循环
@@ -842,23 +844,6 @@ def voltage_pso_optimization(
                 if fitness == 0.5:
                     latest_transit_pos = v.copy()
                 print(fitness)
-                # 更新个体最优
-                if fitness is not None and np.isfinite(fitness) and fitness < personal_best_scores[i]:
-                    personal_best_scores[i] = fitness
-                    personal_best_positions[i] = v.copy()
-
-                # 更新全局最优
-                if np.isfinite(personal_best_scores[i]) and personal_best_scores[i] < global_best_score:
-                    global_best_score = personal_best_scores[i]
-                    global_best_position = personal_best_positions[i].copy()
-
-                    # ---- 新增：第一次 global_best < 0.3 -> 下一轮触发聚焦撒点（只触发一次）----
-                    if (not focus_once) and global_best_score < 0.3:
-                        focus_once = True
-                        focus_next = True
-                        focus_center = global_best_position.copy()
-                        print(f"[FOCUS-ARM] global_best_score={global_best_score:.3f} < 0.3, focus next iter")
-                    # -------------------------------------------------------------------
 
                     # ★★★ 新增：每当找到更小的全局适应度时，保存当前光谱数据到新文件
                     # k = k+1
@@ -868,7 +853,7 @@ def voltage_pso_optimization(
                 print(f"粒子 {i+1} 电压 {v} -> 峰的个数：{len(y_dBm_peaks)} -> 适应度分数: {fitness if fitness is not None else 'NaN'} Hz")
 
 
-                # ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ 退出条件
+                # ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ ❗ 退出条件/以时序稳定性更新
                 if fitness <= 0.25:
                     frequencies = []
                     time.sleep(5)
@@ -879,8 +864,7 @@ def voltage_pso_optimization(
                             break
                         time.sleep(0.2)
                         frequencies.append(freq)
-                    if len(frequencies) == 20:
-                        std = np.std(frequencies)
+                    std = np.std(frequencies) if len(frequencies) == 20 else np.inf
                     print(f"当前频率稳定性std = {std}")
 
                     if std < 650000 and std > 10:
@@ -899,6 +883,39 @@ def voltage_pso_optimization(
                         return
                     else:
                         print("频率稳定性不达标，继续寻优！！")
+                        # 用频率更新最优
+                        if np.isfinite(std) and std > 10:
+                            if std < personal_best_freq_scores[i]:
+                                personal_best_freq_scores[i] = std
+                                personal_best_positions[i] = v.copy()
+                                personal_best_scores[i] = 0.1  # 同步更新，让步长变小
+
+                            if std < global_best_freq_score:
+                                global_best_freq_score = std
+                                global_best_position = v.copy()
+                                global_best_score = 0.1
+                                print(f"[时序稳定性优化] 全局最优更新: {std:.0f} Hz ⭐")
+
+                        # ---- 新增：第一次 global_best < 0.25 -> 下一轮触发聚焦撒点（只触发一次）----
+                        if (not focus_once) and global_best_score < 0.25:
+                            focus_once = True
+                            focus_next = True
+                            focus_center = global_best_position.copy()
+                            print(
+                                f"第一次 global_best < 0.25 -> 下一轮触发聚焦撒点")
+                        # -------------------------------------------------------------------
+
+                # 当光谱适应度大于0.25时，才用光谱适应度更新全局最佳
+                else:
+                    # 更新个体最优
+                    if fitness is not None and np.isfinite(fitness) and fitness < personal_best_scores[i]:
+                        personal_best_scores[i] = fitness
+                        personal_best_positions[i] = v.copy()
+
+                    # 更新全局最优
+                    if np.isfinite(personal_best_scores[i]) and personal_best_scores[i] < global_best_score:
+                        global_best_score = personal_best_scores[i]
+                        global_best_position = personal_best_positions[i].copy()
 
             #若全局最佳是0.5，每三轮更新一次
             if iteration % 3 == 0 and global_best_score == 0.5:
@@ -917,7 +934,7 @@ def voltage_pso_optimization(
                         particles[i] = np.random.uniform(v_min, v_max, 4)
                     else:
                         # 已经有不错的解了：在全局最优附近随机微调
-                        local_span = 10 # 比如 ±5V 的小立方体
+                        local_span = 5 # 比如 ±5V 的小立方体
                         particles[i] = global_best_position + np.random.uniform(-local_span, local_span, 4)
                         particles[i] = np.clip(particles[i], v_min, v_max)
 
@@ -942,12 +959,19 @@ def voltage_pso_optimization(
 
                 # 电压每次的最大步长基准，比如 4 V（你可以自己调 1~5 V 看效果）
                 v_step_max_base = 10.0
-                v_step_max = v_step_max_base * factor
+                if personal_best_scores[i] < 0.25:
+                    v_step_max = 4  # 中步找稳定
+                else:
+                    v_step_max = v_step_max_base * factor
                 # ===================================================
-
-                w = 0.5
-                c1 = 1.5
-                c2 = 1.5
+                if personal_best_scores[i] < 0.25:
+                    w = 0.65
+                    c1 = 1.9
+                    c2 = 1.9
+                else:
+                    w = 0.5
+                    c1 = 1.5
+                    c2 = 1.5
                 r1 = np.random.rand(4)
                 r2 = np.random.rand(4)
 
@@ -1014,9 +1038,9 @@ def find_freq_cmd(osc):
 
 
 if __name__ == "__main__":
-    meas = OSA_MeasurementSystem()
-    y_dBm, x_nm = meas.read_OSA()
-    meas.close()
+    # meas = OSA_MeasurementSystem()
+    # y_dBm, x_nm = meas.read_OSA()
+    # meas.close()
     # y_dBm_peaks, x_nm_peaks = Get_Peaks(y_dBm, x_nm)
     # meas_peaks = list(zip(x_nm_peaks, y_dBm_peaks))
     #
@@ -1040,7 +1064,7 @@ if __name__ == "__main__":
     # OSC_meas.take_screenshot()
     # OSC_meas.close()
 
-    # voltage_pso_optimization()
+    voltage_pso_optimization()
 
 # # 打印部分数据
 # #print(f"共 {npts} 点")
